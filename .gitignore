@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+.tmp/
+.tmp_*/
+.tmp_run/
+.tmp_tool/
+.pdd_browser_profile/
+*.pyc
+*.zip
+*.crx
+
+config.yaml
+.env
+states/*.json
+logs/

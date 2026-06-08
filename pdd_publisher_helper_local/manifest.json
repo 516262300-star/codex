@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "PDD商品发布助手",
+  "version": "2.1.5",
+  "description": "本地工作台驱动的拼多多商品自动上架助手",
+  "icons": {
+    "16": "icons/icon-16.svg",
+    "48": "icons/icon-48.svg",
+    "128": "icons/icon-128.svg"
+  },
+  "homepage_url": "http://127.0.0.1:8765/",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://mms.pinduoduo.com/*",
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*",
+    "https://img.pddpic.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "PDD商品发布助手"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mms.pinduoduo.com/*"
+      ],
+      "js": [
+        "modules/utils.js",
+        "modules/input-handler.js",
+        "modules/select-handler.js",
+        "modules/image-handler.js",
+        "modules/sku-handler.js",
+        "modules/category-handler.js",
+        "modules/main.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "inject.js"
+      ],
+      "matches": [
+        "https://mms.pinduoduo.com/*"
+      ]
+    }
+  ],
+  "update_url": "https://edge.microsoft.com/extensionwebstorebase/v1/crx"
+}

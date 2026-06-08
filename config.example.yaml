@@ -1,0 +1,37 @@
+erp:
+  login_url: "https://ldswj.net/leedis/index.php/welcome/loginpage"
+  login_check_url: "https://ldswj.net/leedis/index.php/welcomeuser"
+  price_page_url: "https://ldswj.net/leedis/index.php/catalog/exportprice4web/<优质价ID>"
+  storage_state: "./states/erp.json"
+  lookup_type: "ldswj_premium"
+
+  username: "${ERP_USERNAME}"
+  password: "${ERP_PASSWORD}"
+
+  selectors:
+    username_input: "#phonenr"
+    password_input: "input[name='password']"
+    login_submit: ".zcbtn.dl"
+    login_error: ""
+    search_input: "#search"
+    search_submit: ""
+    price_cell: ""
+
+  api:
+    premium_price_url: "https://ldswj.net/leedis/index.php/catalog/exportcostprice4xcx"
+    premium_price_id: "<优质价ID>"
+
+  price_regex: "([0-9]+(?:\\.[0-9]+)?)"
+  wait_timeout_ms: 8000
+
+pdd:
+  login_url: "https://mms.pinduoduo.com/"
+  home_url: "https://mms.pinduoduo.com/home"
+  wait_login_timeout_ms: 600000
+  shops:
+    - name: "店铺A"
+      storage_state: "./states/shopA.json"
+  default_shop: "店铺A"
+
+runtime:
+  headless: false

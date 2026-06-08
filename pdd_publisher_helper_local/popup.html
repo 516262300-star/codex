@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>PDD商品发布助手</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 360px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      color: #17202a;
+      background: #f6f7f9;
+    }
+    .header {
+      background: #e02e24;
+      color: #fff;
+      padding: 14px 16px;
+    }
+    .header h1 {
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .header .version {
+      margin-top: 4px;
+      font-size: 12px;
+      opacity: 0.86;
+    }
+    .section {
+      margin: 10px;
+      padding: 14px;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(17, 24, 39, 0.08);
+    }
+    .section-title {
+      margin-bottom: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #344054;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #12b76a;
+      flex: 0 0 auto;
+    }
+    .status-text {
+      color: #475467;
+      line-height: 1.45;
+    }
+    .note {
+      color: #667085;
+      line-height: 1.55;
+      margin-top: 8px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .btn {
+      flex: 1;
+      border: 0;
+      border-radius: 6px;
+      padding: 9px 10px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .btn-primary { background: #e02e24; color: #fff; }
+    .btn-secondary { background: #eef1f5; color: #344054; }
+    .log-area {
+      min-height: 72px;
+      max-height: 120px;
+      overflow-y: auto;
+      padding: 8px;
+      border-radius: 6px;
+      background: #101828;
+      color: #d0d5dd;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>PDD商品发布助手</h1>
+    <div class="version">本地上架版 v2.1.5</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">运行状态</div>
+    <div class="status-row">
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-text" id="statusText">等待读取状态</span>
+    </div>
+    <div class="note">
+      这个弹窗只保留本地安全状态和旧数据清理入口。
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-secondary" id="btnRefresh">刷新状态</button>
+      <button class="btn btn-primary" id="btnClearLegacy">清理旧任务</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">日志</div>
+    <div class="log-area" id="logArea"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
