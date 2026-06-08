@@ -1,0 +1,7 @@
+# Local/generated outputs
+outputs/
+work/
+
+# Windows and editor noise
+Thumbs.db
+.DS_Store
