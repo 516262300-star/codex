@@ -13,3 +13,11 @@ config.yaml
 .env
 states/*.json
 logs/
+
+# Local/generated outputs
+outputs/
+work/
+
+# Windows and editor noise
+Thumbs.db
+.DS_Store

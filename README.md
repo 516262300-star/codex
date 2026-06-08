@@ -15,7 +15,7 @@
 
 ## 配置 ERP
 
-复制 `config.example.yaml` 为 `config.yaml`，填写 ERP 地址和页面选择器。账号密码建议用环境变量：
+复制 `config.example.yaml` 为 `config.yaml`，填好 ERP 地址和页面选择器。账号密码建议用环境变量：
 
 ```powershell
 $env:ERP_USERNAME="你的ERP账号"
