@@ -21,13 +21,15 @@ import yaml
 
 from playwright.async_api import async_playwright
 
-from main import build_dry_run, load_product_meta, money
+from main import ProductMeta, build_dry_run, load_product_meta, money
 from skills.erp_price import ERPPriceClient, load_config
 from skills.pdd_listing import build_sku_specs, resolve_listing_template
 
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_PRODUCT_FOLDER = Path.home() / "Desktop" / "pdd_upload" / "测试商品001"
+DEFAULT_CATEGORY_PATH = "基础建材 > 家用五金 > 拉手 > 明装小拉手"
+DEFAULT_STOCK_PER_SKU = 500
 ATTRIBUTE_TEMPLATE = ROOT / "templates" / "category_attributes.yaml"
 SESSION_PID_PATH = ROOT / ".tmp_tool" / "pdd_session.pid"
 COMMAND_PATH = ROOT / ".tmp_tool" / "pdd_category_command.json"
@@ -75,6 +77,71 @@ def natural_key(text: str) -> tuple[int, str]:
 def compact_name(text: str) -> str:
     stem = Path(text).stem
     return re.sub(r"[\s#/_\\\-.]+", "", stem).lower()
+
+
+def product_key(product_folder: str | Path) -> str:
+    return str(Path(product_folder).expanduser())
+
+
+def infer_erp_model_from_material_path(material_path: str) -> str:
+    parts = [part.strip() for part in re.split(r"[\\/]+", material_path) if part.strip()]
+    if not parts:
+        return ""
+    return parts[-1]
+
+
+def product_meta_from_inputs(
+    product_folder: str | Path,
+    material_path: str = "",
+    price_multiplier: str | None = None,
+    material_choice: str | None = None,
+    package: dict[str, Any] | None = None,
+) -> ProductMeta:
+    package = package or {}
+    package_meta = package.get("meta") if isinstance(package.get("meta"), dict) else {}
+
+    try:
+        meta = load_product_meta(Path(product_folder).expanduser().resolve())
+    except Exception:
+        meta = ProductMeta(
+            erp_model=str(package.get("erp_model") or package_meta.get("erp_model") or infer_erp_model_from_material_path(material_path)),
+            category_path=str(package.get("category_path") or package_meta.get("category_path") or DEFAULT_CATEGORY_PATH),
+            price_multiplier=Decimal(str(package.get("price_multiplier") or package_meta.get("price_multiplier") or price_multiplier or "1")),
+            material=str(package_meta.get("material") or material_choice or MATERIAL_OPTIONS[0]),
+            color=str(package_meta.get("color") or ""),
+            stock_per_sku=int(package_meta.get("stock_per_sku") or DEFAULT_STOCK_PER_SKU),
+        )
+
+    if price_multiplier is not None and str(price_multiplier).strip():
+        meta = ProductMeta(
+            erp_model=meta.erp_model,
+            category_path=meta.category_path or DEFAULT_CATEGORY_PATH,
+            price_multiplier=Decimal(str(price_multiplier)),
+            material=meta.material,
+            color=meta.color,
+            stock_per_sku=meta.stock_per_sku,
+        )
+    if material_choice is not None and str(material_choice).strip():
+        meta = ProductMeta(
+            erp_model=meta.erp_model,
+            category_path=meta.category_path or DEFAULT_CATEGORY_PATH,
+            price_multiplier=meta.price_multiplier,
+            material=str(material_choice).strip(),
+            color=meta.color,
+            stock_per_sku=meta.stock_per_sku,
+        )
+    return meta
+
+
+def meta_json(meta: ProductMeta) -> dict[str, Any]:
+    return {
+        "erp_model": meta.erp_model,
+        "category_path": meta.category_path,
+        "price_multiplier": str(meta.price_multiplier),
+        "material": meta.material,
+        "color": meta.color,
+        "stock_per_sku": meta.stock_per_sku,
+    }
 
 
 def is_process_running(pid: int) -> bool:
@@ -181,27 +248,24 @@ def update_product_material(product_folder: str, material: str) -> dict[str, Any
     if selected not in MATERIAL_OPTIONS:
         raise ValueError(f"材质只能选择：{'、'.join(MATERIAL_OPTIONS)}")
 
-    folder = Path(product_folder).expanduser().resolve()
+    folder = Path(product_folder).expanduser()
     meta_path = folder / "meta.yaml"
-    if not meta_path.exists():
-        raise FileNotFoundError(f"缺少 meta.yaml: {meta_path}")
-
-    with meta_path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
-    raw["material"] = selected
-    with meta_path.open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(raw, fh, allow_unicode=True, sort_keys=False)
+    if meta_path.exists():
+        with meta_path.open("r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+        raw["material"] = selected
+        with meta_path.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump(raw, fh, allow_unicode=True, sort_keys=False)
 
     if TITLE_CACHE_PATH.exists():
         try:
             cached = json.loads(TITLE_CACHE_PATH.read_text(encoding="utf-8"))
-            cached_folder = Path(str(cached.get("product_folder") or "")).expanduser()
-            if cached_folder.resolve() == folder:
+            if str(cached.get("product_folder") or "") == product_key(folder):
                 TITLE_CACHE_PATH.unlink()
         except Exception:
             TITLE_CACHE_PATH.unlink(missing_ok=True)
 
-    return {"product_folder": str(folder), "material": selected, "note": "材质已保存，标题候选会按新材质重新生成。"}
+    return {"product_folder": product_key(folder), "material": selected, "note": "材质已记录，标题候选会按新材质重新生成。"}
 
 
 async def dry_run_payload(product_folder: str, price_multiplier: str | None = None) -> dict[str, Any]:
@@ -211,14 +275,7 @@ async def dry_run_payload(product_folder: str, price_multiplier: str | None = No
     listing_template = resolve_listing_template(meta, ATTRIBUTE_TEMPLATE)
     return {
         "product_folder": str(folder),
-        "meta": {
-            "erp_model": meta.erp_model,
-            "category_path": meta.category_path,
-            "price_multiplier": str(meta.price_multiplier),
-            "material": meta.material,
-            "color": meta.color,
-            "stock_per_sku": meta.stock_per_sku,
-        },
+        "meta": meta_json(meta),
         "listing_template": listing_template,
         "main_images": [image.name for image in main_images],
         "detail_images": [image.name for image in detail_images],
@@ -347,12 +404,10 @@ def summarize_sku_models(sku_rows: list[dict[str, Any]], fallback: str) -> str:
 
 
 async def material_sku_rows_from_image_space(
-    product_folder: str,
     material_sku: list[dict[str, Any]],
+    meta: ProductMeta,
     price_multiplier: str | None = None,
 ) -> list[dict[str, Any]]:
-    folder = Path(product_folder).expanduser().resolve()
-    meta = load_product_meta(folder)
     multiplier = Decimal(str(price_multiplier)) if price_multiplier else meta.price_multiplier
     config = load_config("config.yaml")
     rows: list[dict[str, Any]] = []
@@ -389,13 +444,36 @@ async def material_sku_rows_from_image_space(
     return rows
 
 
-async def upload_plan_payload(product_folder: str, material_path: str, price_multiplier: str | None = None) -> dict[str, Any]:
+async def upload_plan_payload(
+    product_folder: str,
+    material_path: str,
+    price_multiplier: str | None = None,
+    material_choice: str | None = None,
+) -> dict[str, Any]:
     write_plugin_status({"id": int(time.time()), "query_count": 0, "status": 0})
     if not str(price_multiplier or "").strip():
         raise ValueError("请先填写价格倍数")
     if not str(material_path or "").strip():
         raise ValueError("请先填写图片空间路径")
-    dry = await dry_run_payload(product_folder, price_multiplier=price_multiplier)
+    if not str(material_choice or "").strip():
+        raise ValueError("请先选择材质")
+
+    folder_key = product_key(product_folder)
+    meta = product_meta_from_inputs(
+        product_folder,
+        material_path=material_path,
+        price_multiplier=price_multiplier,
+        material_choice=material_choice,
+    )
+    listing_template = resolve_listing_template(meta, ATTRIBUTE_TEMPLATE)
+    dry = {
+        "product_folder": folder_key,
+        "meta": meta_json(meta),
+        "listing_template": listing_template,
+        "main_images": [],
+        "detail_images": [],
+        "skus": [],
+    }
     material = await material_payload(material_path)
 
     material_main = find_child_files(material, "主图")
@@ -404,36 +482,22 @@ async def upload_plan_payload(product_folder: str, material_path: str, price_mul
 
     main_images = sorted(material_main, key=lambda item: natural_key(str(item.get("filename") or "")))
     detail_images = sorted(material_detail, key=lambda item: natural_key(str(item.get("filename") or "")))
-    sku_rows = []
-    sku_source = "local_product_folder"
-    try:
-        for sku in dry["skus"]:
-            matched = find_matching_file(material_sku, str(sku["sku_name"]))
-            sku_rows.append({**sku, "material_image": matched})
-    except FileNotFoundError as exc:
-        local_skus = [str(sku.get("sku_name") or "") for sku in dry["skus"]]
-        material_skus = [material_file_sku_name(file) for file in sorted(material_sku, key=material_sku_sort_key)]
-        if not material_skus:
-            raise
-        sku_rows = await material_sku_rows_from_image_space(
-            product_folder,
-            material_sku,
-            price_multiplier=price_multiplier,
-        )
-        sku_source = "image_space_size_images"
-        dry["sku_source_warning"] = (
-            "本地商品文件夹的尺寸图和图片空间不一致，已改用图片空间“尺寸图”文件名生成 SKU。"
-            f" 本地 SKU: {', '.join(local_skus[:8])}; 图片空间 SKU: {', '.join(material_skus[:8])}"
-        )
+    if not material_sku:
+        raise FileNotFoundError("图片空间“尺寸图”文件夹里没有图片，无法生成 SKU")
+    sku_rows = await material_sku_rows_from_image_space(
+        material_sku,
+        meta,
+        price_multiplier=price_multiplier,
+    )
+    sku_source = "image_space_size_images"
 
-    package_erp_model = summarize_sku_models(sku_rows, str(dry["meta"]["erp_model"])) if sku_source == "image_space_size_images" else str(dry["meta"]["erp_model"])
-    if sku_source == "image_space_size_images":
-        dry["meta"]["erp_model"] = package_erp_model
-        listing_template = dry.get("listing_template") or {}
-        listing = listing_template.get("template") or {}
-        title_template = str(listing.get("title_template") or "")
-        if title_template:
-            listing["title_template"] = re.sub(r"\b\d+[A-Za-z]*(?:-\d+[A-Za-z]*)?\b", package_erp_model, title_template, count=1)
+    package_erp_model = summarize_sku_models(sku_rows, str(dry["meta"]["erp_model"]))
+    dry["meta"]["erp_model"] = package_erp_model
+    listing_template = dry.get("listing_template") or {}
+    listing = listing_template.get("template") or {}
+    title_template = str(listing.get("title_template") or "")
+    if title_template:
+        listing["title_template"] = re.sub(r"\b\d+[A-Za-z]*(?:-\d+[A-Za-z]*)?\b", package_erp_model, title_template, count=1)
     sku_specs = build_sku_specs(sku_rows, erp_model=package_erp_model)
     package = {
         "product_folder": dry["product_folder"],
@@ -442,6 +506,7 @@ async def upload_plan_payload(product_folder: str, material_path: str, price_mul
         "category_path": (dry.get("listing_template") or {}).get("matched_category_path") or dry["meta"]["category_path"],
         "category_keyword": "小拉手",
         "price_multiplier": dry["meta"]["price_multiplier"],
+        "meta": dry["meta"],
         "main_images": [
             {
                 "index": index,
@@ -472,12 +537,6 @@ async def upload_plan_payload(product_folder: str, material_path: str, price_mul
             "sku_source": sku_source,
         },
     }
-    dry["meta"]["erp_model"] = package_erp_model
-    listing_template = dry.get("listing_template") or {}
-    listing = listing_template.get("template") or {}
-    title_template = str(listing.get("title_template") or "")
-    if title_template:
-        listing["title_template"] = re.sub(r"\b\d+[A-Za-z]*(?:-\d+[A-Za-z]*)?\b", package_erp_model, title_template, count=1)
     package_path = ROOT / ".tmp_tool" / "listing_asset_package.json"
     package_path.parent.mkdir(parents=True, exist_ok=True)
     package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -494,10 +553,10 @@ async def upload_plan_payload(product_folder: str, material_path: str, price_mul
         "package": package,
         "package_path": str(package_path),
         "sku_source": sku_source,
-        "sku_source_warning": dry.get("sku_source_warning") or "",
+        "sku_source_warning": "",
         "source": {
-            "local_main_images": dry["main_images"],
-            "local_detail_images": dry["detail_images"],
+            "local_main_images": [],
+            "local_detail_images": [],
             "material_dir_id": material["dir_id"],
         },
     }
@@ -513,7 +572,12 @@ async def prepare_listing_payload(
     if not str(material_choice or "").strip():
         raise ValueError("请先选择材质")
     update_product_material(product_folder, str(material_choice))
-    return await upload_plan_payload(product_folder, material_path, price_multiplier=price_multiplier)
+    return await upload_plan_payload(
+        product_folder,
+        material_path,
+        price_multiplier=price_multiplier,
+        material_choice=material_choice,
+    )
 
 
 async def open_category_page_payload() -> dict[str, Any]:
@@ -563,15 +627,10 @@ def split_title_zones(title: str) -> dict[str, str]:
 
 
 def collect_title_signals(folder: Path, package: dict[str, Any] | None = None) -> dict[str, Any]:
-    meta = load_product_meta(folder)
     package = package or {}
+    meta = product_meta_from_inputs(folder, package=package)
     package_folder_raw = str(package.get("product_folder") or "").strip()
-    package_matches_folder = False
-    if package_folder_raw:
-        try:
-            package_matches_folder = Path(package_folder_raw).expanduser().resolve() == folder
-        except OSError:
-            package_matches_folder = False
+    package_matches_folder = package_folder_raw == product_key(folder)
     package_erp_model = str(package.get("erp_model") or "").strip() if package_matches_folder else ""
     sku_texts: list[str] = []
     if package_matches_folder:
@@ -612,7 +671,7 @@ def title_candidate_reason(title: str, signals: dict[str, Any]) -> str:
 
 
 def generate_title_payload(product_folder: str) -> dict[str, Any]:
-    folder = Path(product_folder).expanduser().resolve()
+    folder = Path(product_folder).expanduser()
     package_path = ROOT / ".tmp_tool" / "listing_asset_package.json"
     package = json.loads(package_path.read_text(encoding="utf-8")) if package_path.exists() else {}
     signals = collect_title_signals(folder, package)
@@ -654,7 +713,7 @@ def generate_title_payload(product_folder: str) -> dict[str, Any]:
     candidates = candidates[:6]
     recommended = candidates[0]["title"] if candidates else ""
     payload = {
-        "product_folder": str(folder),
+        "product_folder": product_key(folder),
         "erp_model": signals["erp_model"],
         "material": signals["material"],
         "color": signals["color"],
@@ -669,7 +728,7 @@ def generate_title_payload(product_folder: str) -> dict[str, Any]:
 
 
 def select_title_payload(product_folder: str, title: str) -> dict[str, Any]:
-    folder = Path(product_folder).expanduser().resolve()
+    folder = Path(product_folder).expanduser()
     selected = title.strip()
     if not selected:
         raise ValueError("标题不能为空")
@@ -713,18 +772,16 @@ def cached_recommended_title(folder: Path) -> str:
         payload = json.loads(TITLE_CACHE_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return ""
-    cached_folder = Path(str(payload.get("product_folder") or "")).expanduser()
-    try:
-        if cached_folder.resolve() != folder.resolve():
-            return ""
-    except OSError:
+    if str(payload.get("product_folder") or "") != product_key(folder):
         return ""
     return str(payload.get("recommended_title") or "")
 
 
 async def fill_basic_info_payload(product_folder: str, price_multiplier: str | None = None) -> dict[str, Any]:
-    folder = Path(product_folder).expanduser().resolve()
-    meta = load_product_meta(folder)
+    folder = Path(product_folder).expanduser()
+    package_path = ROOT / ".tmp_tool" / "listing_asset_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8")) if package_path.exists() else {}
+    meta = product_meta_from_inputs(folder, price_multiplier=price_multiplier, package=package)
     listing_template = resolve_listing_template(meta, ATTRIBUTE_TEMPLATE)
     listing = listing_template["template"]
     payload = {
@@ -898,8 +955,8 @@ def listing_attributes_array(attributes: dict[str, Any]) -> list[dict[str, str]]
 
 
 def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
-    folder = Path(str(package.get("product_folder") or DEFAULT_PRODUCT_FOLDER)).expanduser().resolve()
-    meta = load_product_meta(folder)
+    folder = Path(str(package.get("product_folder") or DEFAULT_PRODUCT_FOLDER)).expanduser()
+    meta = product_meta_from_inputs(folder, package=package)
     listing_template = resolve_listing_template(meta, ATTRIBUTE_TEMPLATE)
     listing = listing_template["template"]
     generated_title = cached_recommended_title(folder) or str(listing.get("title_template") or "")
@@ -1550,7 +1607,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/defaults":
             self._send_json({
-                "default_product_folder": str(DEFAULT_PRODUCT_FOLDER),
+                "default_product_folder": "",
                 "default_price_multiplier": "",
                 "default_material": "",
             })
