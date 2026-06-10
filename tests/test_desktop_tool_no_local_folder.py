@@ -3,6 +3,13 @@ from decimal import Decimal
 import desktop_tool
 
 
+def test_parse_material_sku_lookup_extracts_size_from_descriptive_filename():
+    lookup_name, color = desktop_tool.parse_material_sku_lookup("8105胡桃木-古铜色-96尺寸图")
+
+    assert lookup_name == "8105-96"
+    assert color == "胡桃木-古铜色"
+
+
 def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     package = {
         "product_folder": str(tmp_path / "missing-product-folder"),

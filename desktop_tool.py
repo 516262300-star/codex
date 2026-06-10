@@ -383,6 +383,25 @@ def material_sku_sort_key(file: dict[str, Any]) -> tuple[Any, ...]:
 def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
     stem = Path(sku_name).stem.strip()
     parts = [part.strip() for part in re.split(r"[-_#\s]+", stem) if part.strip()]
+    if len(parts) >= 2:
+        base_match = re.match(r"^(\d+[A-Za-z]*)(.*)$", parts[0])
+        size_index = -1
+        size_value = ""
+        for index, part in enumerate(parts[1:], start=1):
+            size_match = re.match(r"^(\d+)(?:尺寸图|尺寸|直径|mm|MM)?$", part)
+            if size_match:
+                size_index = index
+                size_value = size_match.group(1)
+                break
+        if base_match and size_value:
+            color_parts = []
+            first_suffix = base_match.group(2).strip()
+            if first_suffix:
+                color_parts.append(first_suffix)
+            color_parts.extend(parts[1:size_index])
+            color = "-".join(part for part in color_parts if part).strip() or None
+            return f"{base_match.group(1)}-{size_value}", color
+
     if len(parts) >= 3 and re.fullmatch(r"\d+[A-Za-z]*", parts[0]):
         tail = parts[-1]
         if re.fullmatch(r"\d+|单孔|吊坠|直径|\d+直径", tail):
