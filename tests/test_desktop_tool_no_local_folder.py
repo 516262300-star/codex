@@ -1,13 +1,41 @@
 from decimal import Decimal
 
 import desktop_tool
+from skills.erp_price.client import ERPPriceClient
 
 
 def test_parse_material_sku_lookup_extracts_size_from_descriptive_filename():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("8105胡桃木-古铜色-96尺寸图")
 
     assert lookup_name == "8105-96"
-    assert color == "胡桃木-古铜色"
+    assert color == "古铜色"
+
+
+def test_parse_material_sku_lookup_ignores_single_hole_suffix():
+    lookup_name, color = desktop_tool.parse_material_sku_lookup("2715云栖-铬色-单孔")
+
+    assert lookup_name == "2715"
+    assert color == "铬"
+
+
+def test_parse_material_sku_lookup_maps_titanium_silver_to_bright_nickel():
+    lookup_name, color = desktop_tool.parse_material_sku_lookup("2715云栖-钛银-单孔")
+
+    assert lookup_name == "2715"
+    assert color == "亮镍"
+
+
+def test_parse_material_sku_lookup_maps_bright_gold_to_rose_gold():
+    lookup_name, color = desktop_tool.parse_material_sku_lookup("2715云栖-亮金-单孔")
+
+    assert lookup_name == "2715"
+    assert color == "玫瑰金"
+
+
+def test_price_book_color_matches_short_chrome_name():
+    client = ERPPriceClient.__new__(ERPPriceClient)
+
+    assert client._color_matches("铬", "铬色")
 
 
 def test_money_with_cent_ending_sets_second_decimal_digit():

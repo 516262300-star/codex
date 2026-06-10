@@ -394,9 +394,45 @@ def material_sku_sort_key(file: dict[str, Any]) -> tuple[Any, ...]:
     return natural_key(str(file.get("filename") or ""))
 
 
+PRICE_BOOK_COLOR_WORDS = (
+    "哑镍拉丝",
+    "古铜色",
+    "铜本色",
+    "玫瑰金",
+    "铜拉丝",
+    "亮金",
+    "钛银",
+    "亮镍",
+    "哑镍",
+    "铬色",
+    "黑色",
+    "金色",
+    "银色",
+    "铬",
+)
+
+PRICE_BOOK_COLOR_ALIASES = {
+    "钛银": "亮镍",
+    "亮金": "玫瑰金",
+    "铬色": "铬",
+}
+
+
+def extract_price_book_color(text: str) -> str | None:
+    compact = re.sub(r"[\s#/_\\\-.]+", "", text)
+    for alias, price_book_color in PRICE_BOOK_COLOR_ALIASES.items():
+        if alias in compact:
+            return price_book_color
+    for color in PRICE_BOOK_COLOR_WORDS:
+        if color in compact:
+            return color
+    return None
+
+
 def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
     stem = Path(sku_name).stem.strip()
     parts = [part.strip() for part in re.split(r"[-_#\s]+", stem) if part.strip()]
+    known_color = extract_price_book_color(stem)
     if len(parts) >= 2:
         base_match = re.match(r"^(\d+[A-Za-z]*)(.*)$", parts[0])
         size_index = -1
@@ -413,13 +449,22 @@ def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
             if first_suffix:
                 color_parts.append(first_suffix)
             color_parts.extend(parts[1:size_index])
-            color = "-".join(part for part in color_parts if part).strip() or None
+            color = known_color or "-".join(part for part in color_parts if part).strip() or None
             return f"{base_match.group(1)}-{size_value}", color
+        if base_match:
+            non_model_text = "-".join([base_match.group(2).strip(), *parts[1:]]).strip("-")
+            if known_color:
+                return base_match.group(1), known_color
+            if non_model_text and re.search(r"单孔|吊坠|直径", non_model_text):
+                color = re.sub(r"(单孔|吊坠|直径|尺寸图|尺寸)$", "", non_model_text).strip("-") or None
+                return base_match.group(1), color
 
     if len(parts) >= 3 and re.fullmatch(r"\d+[A-Za-z]*", parts[0]):
         tail = parts[-1]
-        if re.fullmatch(r"\d+|单孔|吊坠|直径|\d+直径", tail):
+        if re.fullmatch(r"\d+|\d+直径", tail):
             return f"{parts[0]}-{tail}", "-".join(parts[1:-1])
+        if re.fullmatch(r"单孔|吊坠|直径", tail):
+            return parts[0], known_color or "-".join(parts[1:-1])
     return stem, None
 
 
