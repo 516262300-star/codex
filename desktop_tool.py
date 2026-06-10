@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import webbrowser
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -142,6 +142,20 @@ def meta_json(meta: ProductMeta) -> dict[str, Any]:
         "color": meta.color,
         "stock_per_sku": meta.stock_per_sku,
     }
+
+
+def money_with_cent_ending(value: Decimal, cent_ending: str | int | None = None) -> Decimal:
+    rounded = money(value)
+    if cent_ending is None or str(cent_ending).strip() == "":
+        return rounded
+
+    ending = int(str(cent_ending).strip())
+    if ending not in {8, 9}:
+        raise ValueError("价格尾数只能选择 8 或 9")
+
+    cents = int((rounded * 100).to_integral_value(rounding=ROUND_HALF_UP))
+    adjusted_cents = cents - (cents % 10) + ending
+    return (Decimal(adjusted_cents) / Decimal("100")).quantize(Decimal("0.01"))
 
 
 def is_process_running(pid: int) -> bool:
@@ -426,6 +440,7 @@ async def material_sku_rows_from_image_space(
     material_sku: list[dict[str, Any]],
     meta: ProductMeta,
     price_multiplier: str | None = None,
+    price_cent_ending: str | None = None,
 ) -> list[dict[str, Any]]:
     multiplier = Decimal(str(price_multiplier)) if price_multiplier else meta.price_multiplier
     config = load_config("config.yaml")
@@ -439,7 +454,7 @@ async def material_sku_rows_from_image_space(
                     sku_name = material_file_sku_name(image)
                     lookup_name, color = parse_material_sku_lookup(sku_name)
                     quote = await erp.get_price_quote(lookup_name, color=color)
-                    group_price = money(quote.price * multiplier)
+                    group_price = money_with_cent_ending(quote.price * multiplier, price_cent_ending)
                     single_price = money(group_price + Decimal("1"))
                     rows.append(
                         {
@@ -468,6 +483,7 @@ async def upload_plan_payload(
     material_path: str,
     price_multiplier: str | None = None,
     material_choice: str | None = None,
+    price_cent_ending: str | None = None,
 ) -> dict[str, Any]:
     write_plugin_status({"id": int(time.time()), "query_count": 0, "status": 0})
     if not str(price_multiplier or "").strip():
@@ -476,6 +492,8 @@ async def upload_plan_payload(
         raise ValueError("请先填写图片空间路径")
     if not str(material_choice or "").strip():
         raise ValueError("请先选择材质")
+    if str(price_cent_ending or "").strip() not in {"8", "9"}:
+        raise ValueError("请先选择价格尾数：8 或 9")
 
     folder_key = product_key(product_folder)
     meta = product_meta_from_inputs(
@@ -507,6 +525,7 @@ async def upload_plan_payload(
         material_sku,
         meta,
         price_multiplier=price_multiplier,
+        price_cent_ending=price_cent_ending,
     )
     sku_source = "image_space_size_images"
 
@@ -525,6 +544,7 @@ async def upload_plan_payload(
         "category_path": (dry.get("listing_template") or {}).get("matched_category_path") or dry["meta"]["category_path"],
         "category_keyword": "小拉手",
         "price_multiplier": dry["meta"]["price_multiplier"],
+        "price_cent_ending": str(price_cent_ending),
         "meta": dry["meta"],
         "main_images": [
             {
@@ -586,6 +606,7 @@ async def prepare_listing_payload(
     material_path: str,
     price_multiplier: str | None = None,
     material_choice: str | None = None,
+    price_cent_ending: str | None = None,
 ) -> dict[str, Any]:
     write_plugin_status({"id": int(time.time()), "query_count": 0, "status": 0})
     if not str(material_choice or "").strip():
@@ -596,6 +617,7 @@ async def prepare_listing_payload(
         material_path,
         price_multiplier=price_multiplier,
         material_choice=material_choice,
+        price_cent_ending=price_cent_ending,
     )
 
 
@@ -1205,6 +1227,11 @@ HTML = r"""<!doctype html>
       <input id="folder" />
       <label>价格倍数</label>
       <input id="priceMultiplier" inputmode="decimal" placeholder="例如 1.6" />
+      <label>价格尾数</label>
+      <select id="priceEnding">
+        <option value="8">小数第 2 位尾数 8</option>
+        <option value="9">小数第 2 位尾数 9</option>
+      </select>
       <label>材质</label>
       <select id="materialSelect">
         <option value="">请选择材质</option>
@@ -1253,6 +1280,7 @@ HTML = r"""<!doctype html>
   <script>
     const folder = document.getElementById("folder");
     const priceMultiplier = document.getElementById("priceMultiplier");
+    const priceEnding = document.getElementById("priceEnding");
     const materialSelect = document.getElementById("materialSelect");
     const materialPath = document.getElementById("materialPath");
     const log = document.getElementById("log");
@@ -1307,6 +1335,7 @@ HTML = r"""<!doctype html>
     function requireTaskInputs({needPath = false} = {}) {
       const missing = [];
       if (!priceMultiplier.value.trim()) missing.push("价格倍数");
+      if (!priceEnding.value.trim()) missing.push("价格尾数");
       if (!materialSelect.value.trim()) missing.push("材质");
       if (needPath && !materialPath.value.trim()) missing.push("图片空间路径");
       if (missing.length) {
@@ -1367,6 +1396,7 @@ HTML = r"""<!doctype html>
             <tr><th>图片空间</th><td>${escapeHTML(data.material_path)}</td></tr>
             <tr><th>ERP 型号</th><td>${escapeHTML(data.meta.erp_model)}</td></tr>
             <tr><th>价格倍数</th><td>${escapeHTML(data.meta.price_multiplier)}</td></tr>
+            <tr><th>价格尾数</th><td>${escapeHTML(pack.price_cent_ending || "")}</td></tr>
             <tr><th>SKU 来源</th><td>${escapeHTML(data.sku_source || (pack.checks || {}).sku_source || "")}</td></tr>
             <tr><th>提示</th><td>${escapeHTML(data.sku_source_warning || "")}</td></tr>
             <tr><th>素材包文件</th><td>${escapeHTML(data.package_path || "")}</td></tr>
@@ -1449,6 +1479,7 @@ HTML = r"""<!doctype html>
       const data = await fetch("/api/defaults").then(r => r.json());
       folder.value = data.default_product_folder;
       priceMultiplier.value = "";
+      priceEnding.value = data.default_price_ending || "8";
       materialSelect.value = "";
       materialPath.value = "";
     }
@@ -1494,7 +1525,7 @@ HTML = r"""<!doctype html>
         requireTaskInputs({needPath: true});
         setState("等待扫码");
         writeLog("正在生成图片和规格包。会交给当前 Chrome 插件读取图片空间，不会打开独立测试浏览器；随后匹配主图、详情页、尺寸图和规格价格。");
-        const data = await postJSON("/api/plan", {folder: folder.value, path: materialPath.value, price_multiplier: priceMultiplier.value, material: materialSelect.value});
+        const data = await postJSON("/api/plan", {folder: folder.value, path: materialPath.value, price_multiplier: priceMultiplier.value, price_ending: priceEnding.value, material: materialSelect.value});
         renderPlan(data);
         writeLog("图片和规格包生成完成。请重点检查主图顺序、详情页顺序、规格名称、尺寸图、价格和库存。");
         setState("已完成");
@@ -1628,6 +1659,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "default_product_folder": "",
                 "default_price_multiplier": "",
+                "default_price_ending": "8",
                 "default_material": "",
             })
             return
@@ -1689,6 +1721,7 @@ class Handler(BaseHTTPRequestHandler):
                         str(payload.get("path") or ""),
                         str(payload.get("price_multiplier") or "").strip() or None,
                         str(payload.get("material") or "").strip() or None,
+                        str(payload.get("price_ending") or "").strip() or None,
                     )
                 )
                 self._send_json(data)

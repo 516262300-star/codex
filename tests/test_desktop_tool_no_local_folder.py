@@ -10,6 +10,11 @@ def test_parse_material_sku_lookup_extracts_size_from_descriptive_filename():
     assert color == "胡桃木-古铜色"
 
 
+def test_money_with_cent_ending_sets_second_decimal_digit():
+    assert desktop_tool.money_with_cent_ending(Decimal("23.044"), "8") == Decimal("23.08")
+    assert desktop_tool.money_with_cent_ending(Decimal("23.044"), "9") == Decimal("23.09")
+
+
 def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     package = {
         "product_folder": str(tmp_path / "missing-product-folder"),
