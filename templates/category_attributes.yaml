@@ -3,9 +3,8 @@ default_category: "基础建材 > 家用五金 > 拉手 > 明装小拉手"
 categories:
   "基础建材 > 家用五金 > 拉手 > 明装小拉手":
     pdd_category_id: "193332148218"
-    title_template: "梵居匠 {erp_model} 柜门抽屉明装小拉手 {material} 单孔拉手"
+    title_template: "{erp_model} 柜门抽屉明装小拉手 {material} 单孔拉手"
     attributes:
-      品牌: "梵居匠"
       材质: "{material}"
       拉手类型: "明装拉手"
       使用对象:

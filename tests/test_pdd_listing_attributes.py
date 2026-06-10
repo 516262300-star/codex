@@ -46,3 +46,19 @@ categories:
     assert plan["template"]["attributes"]["材质"] == "锌合金"
     assert plan["template"]["attributes"]["颜色"] == "古铜色"
     assert plan["template"]["attributes"]["孔距"] == "单孔"
+
+
+def test_default_template_does_not_force_store_brand():
+    meta = Meta(
+        erp_model="8105-8255",
+        category_path="基础建材 > 家用五金 > 拉手 > 明装小拉手",
+        price_multiplier=Decimal("1.8"),
+        material="黄铜",
+        color="古铜色",
+        stock_per_sku=500,
+    )
+
+    plan = resolve_listing_template(meta, "templates/category_attributes.yaml")
+
+    assert not plan["template"]["title_template"].startswith("梵居匠")
+    assert "品牌" not in plan["template"]["attributes"]
