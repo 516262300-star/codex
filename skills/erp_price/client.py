@@ -344,6 +344,14 @@ class ERPPriceClient:
         if len(suffix_matches) == 1:
             return suffix_matches[0]
 
+        install_size_matches = [
+            product
+            for product in products
+            if self._model_matches_install_size_fallback(str(product.get("name") or ""), sku)
+        ]
+        if len(install_size_matches) == 1:
+            return install_size_matches[0]
+
         base_matches = [
             product
             for product in products
@@ -483,6 +491,17 @@ class ERPPriceClient:
             return False
         suffix = candidate_key[len(model_key) :].strip("-_#/")
         return suffix in {"直径", "mm", "毫米", "单孔", "吊坠"}
+
+    def _model_matches_install_size_fallback(self, candidate: str, sku: "ParsedSKU") -> bool:
+        base_key = self._compact_model(sku.search_word)
+        if sku.model_key != f"{base_key}-33":
+            return False
+
+        candidate_key = self._compact_model(candidate)
+        return candidate_key in {
+            self._compact_model(f"{sku.search_word}-单孔"),
+            self._compact_model(f"{sku.search_word}-吊坠"),
+        }
 
     def _color_matches(self, candidate: str, color_key: str) -> bool:
         compact_candidate = self._compact_color(candidate)

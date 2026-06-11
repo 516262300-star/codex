@@ -465,3 +465,61 @@ async def test_get_price_from_premium_book_matches_single_hole_suffix(tmp_path, 
     assert quote.product_name == "2705-单孔"
     assert quote.color_name == "雅黑"
     assert quote.price == Decimal("8.5")
+
+
+@pytest.mark.asyncio
+async def test_get_price_from_premium_book_falls_back_from_33_to_single_hole(tmp_path, monkeypatch):
+    import skills.erp_price.client as client_module
+
+    class SingleHolePremiumRequest:
+        async def post(self, *_args, **_kwargs):
+            return FakeAPIResponse(
+                {
+                    "lists": [
+                        {"name": "2705-单孔", "colors": [{"color": "雅黑", "price": 8.5}]},
+                        {"name": "2705-25直径", "colors": [{"color": "雅黑", "price": 10.5}]},
+                        {"name": "2705-30直径", "colors": [{"color": "雅黑", "price": 12.5}]},
+                    ]
+                }
+            )
+
+    class SingleHolePremiumPage(FakePage):
+        def __init__(self):
+            super().__init__()
+            self.logged_in = True
+            self.request = SingleHolePremiumRequest()
+
+    class SingleHolePremiumContext(FakeContext):
+        def __init__(self):
+            self.page = SingleHolePremiumPage()
+            self.saved_path = None
+
+    class SingleHolePremiumBrowser(FakeBrowser):
+        def __init__(self):
+            self.context = SingleHolePremiumContext()
+
+    monkeypatch.setattr(client_module, "PlaywrightTimeoutError", FakePage.timeout_error)
+    config = ERPConfig(
+        login_url="http://erp/login",
+        price_page_url="http://erp/premium",
+        storage_state=tmp_path / "erp.json",
+        username="alice",
+        password="secret",
+        selectors=ERPSelectors(
+            username_input="#user",
+            password_input="#pass",
+            login_submit="#login",
+            search_input="#search",
+        ),
+        lookup_type="ldswj_premium",
+        api=client_module.ERPAPIConfig(
+            premium_price_url="http://erp/exportcostprice4xcx",
+            premium_price_id="yzfdkja6bvh",
+        ),
+    )
+
+    quote = await ERPPriceClient(SingleHolePremiumBrowser(), config).get_price_quote("2705-33", color="雅黑")
+
+    assert quote.product_name == "2705-单孔"
+    assert quote.color_name == "雅黑"
+    assert quote.price == Decimal("8.5")
