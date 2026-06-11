@@ -342,3 +342,68 @@ async def test_get_price_from_premium_book_allows_safe_model_suffix(tmp_path, mo
     assert quote.product_name == "8064-20直径"
     assert quote.color_name == "古铜色"
     assert quote.price == Decimal("9.8")
+
+
+@pytest.mark.asyncio
+async def test_get_price_from_premium_book_retries_full_model_when_base_has_no_rows(tmp_path, monkeypatch):
+    import skills.erp_price.client as client_module
+
+    class RetryPremiumRequest:
+        def __init__(self):
+            self.words = []
+
+        async def post(self, *_args, **kwargs):
+            word = kwargs["form"]["word"]
+            self.words.append(word)
+            if word == "2075":
+                return FakeAPIResponse({"lists": []})
+            return FakeAPIResponse(
+                {
+                    "lists": [
+                        {"name": "2075-33", "colors": [{"color": "哑镍拉丝", "price": 18.6}]},
+                    ]
+                }
+            )
+
+    class RetryPremiumPage(FakePage):
+        def __init__(self):
+            super().__init__()
+            self.logged_in = True
+            self.request = RetryPremiumRequest()
+
+    class RetryPremiumContext(FakeContext):
+        def __init__(self):
+            self.page = RetryPremiumPage()
+            self.saved_path = None
+
+    class RetryPremiumBrowser(FakeBrowser):
+        def __init__(self):
+            self.context = RetryPremiumContext()
+
+    monkeypatch.setattr(client_module, "PlaywrightTimeoutError", FakePage.timeout_error)
+    config = ERPConfig(
+        login_url="http://erp/login",
+        price_page_url="http://erp/premium",
+        storage_state=tmp_path / "erp.json",
+        username="alice",
+        password="secret",
+        selectors=ERPSelectors(
+            username_input="#user",
+            password_input="#pass",
+            login_submit="#login",
+            search_input="#search",
+        ),
+        lookup_type="ldswj_premium",
+        api=client_module.ERPAPIConfig(
+            premium_price_url="http://erp/exportcostprice4xcx",
+            premium_price_id="yzfdkja6bvh",
+        ),
+    )
+    browser = RetryPremiumBrowser()
+
+    quote = await ERPPriceClient(browser, config).get_price_quote("2075-33哑镍拉丝")
+
+    assert browser.context.page.request.words == ["2075", "2075-33"]
+    assert quote.product_name == "2075-33"
+    assert quote.color_name == "哑镍拉丝"
+    assert quote.price == Decimal("18.6")

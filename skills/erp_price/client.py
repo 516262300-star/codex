@@ -299,22 +299,29 @@ class ERPPriceClient:
             raise ERPPriceNotFound("Missing premium price API config")
 
         sku = self._parse_sku_name(sku_name, color=color)
-        response = await page.request.post(
-            self.config.api.premium_price_url,
-            form={
-                "page": "0",
-                "priceid": self.config.api.premium_price_id,
-                "word": sku.search_word,
-                "label": "",
-                "labeltype": "",
-                "get_profit_rate": "0",
-            },
-            timeout=self.config.wait_timeout_ms,
-        )
-        data = self._loads_json(await response.text())
-        products = data.get("lists") or []
+        products = []
+        tried_words = []
+        for word in sku.search_words:
+            tried_words.append(word)
+            response = await page.request.post(
+                self.config.api.premium_price_url,
+                form={
+                    "page": "0",
+                    "priceid": self.config.api.premium_price_id,
+                    "word": word,
+                    "label": "",
+                    "labeltype": "",
+                    "get_profit_rate": "0",
+                },
+                timeout=self.config.wait_timeout_ms,
+            )
+            data = self._loads_json(await response.text())
+            products = data.get("lists") or []
+            if products:
+                break
+
         if not products:
-            raise ERPPriceNotFound(f"Premium price book returned no rows for {sku.search_word}")
+            raise ERPPriceNotFound(f"Premium price book returned no rows for {', '.join(tried_words)}")
 
         product = self._match_premium_product(products, sku)
         color_row = self._match_premium_color(product, sku)
@@ -457,10 +464,12 @@ class ERPPriceClient:
 
         search_match = re.match(r"\d+[A-Za-z]*", model_text)
         search_word = search_match.group(0) if search_match else model_text
+        search_words = tuple(dict.fromkeys(word for word in (search_word, model_text) if word))
 
         return ParsedSKU(
             original=text,
             search_word=search_word,
+            search_words=search_words,
             model_key=self._compact_model(model_text),
             color_key=self._compact_color(color_text),
         )
@@ -505,5 +514,6 @@ class ERPPriceClient:
 class ParsedSKU:
     original: str
     search_word: str
+    search_words: tuple[str, ...]
     model_key: str
     color_key: str
