@@ -481,8 +481,8 @@ class ERPPriceClient:
         candidate_key = self._compact_model(candidate)
         if not candidate_key.startswith(model_key):
             return False
-        suffix = candidate_key[len(model_key) :]
-        return suffix in {"直径", "mm", "毫米"}
+        suffix = candidate_key[len(model_key) :].strip("-_#/")
+        return suffix in {"直径", "mm", "毫米", "单孔", "吊坠"}
 
     def _color_matches(self, candidate: str, color_key: str) -> bool:
         compact_candidate = self._compact_color(candidate)
