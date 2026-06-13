@@ -44,6 +44,7 @@ erp:
 - `search_submit`: 搜索按钮，可留空，留空会按 Enter
 - `price_cell`: 价格显示元素
 - `login_error`: 登录失败提示，可留空
+- `wait_timeout_ms`: ERP 页面和价格接口等待时间，建议保持 `30000`，避免优质价接口偶发慢响应时过早失败
 
 真实账号、密码、`states/*.json` 不要提交到 git。
 

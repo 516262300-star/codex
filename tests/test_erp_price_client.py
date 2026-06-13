@@ -523,3 +523,62 @@ async def test_get_price_from_premium_book_falls_back_from_33_to_single_hole(tmp
     assert quote.product_name == "2705-单孔"
     assert quote.color_name == "雅黑"
     assert quote.price == Decimal("8.5")
+
+
+@pytest.mark.asyncio
+async def test_get_price_from_premium_book_hides_raw_timeout_log(tmp_path, monkeypatch):
+    import skills.erp_price.client as client_module
+
+    class TimeoutPremiumRequest:
+        def __init__(self):
+            self.calls = 0
+
+        async def post(self, *_args, **_kwargs):
+            self.calls += 1
+            raise FakePage.timeout_error("APIRequestContext.post: Timeout 8000ms exceeded.\nCall log:\n- cookie: secret")
+
+    class TimeoutPremiumPage(FakePage):
+        def __init__(self):
+            super().__init__()
+            self.logged_in = True
+            self.request = TimeoutPremiumRequest()
+
+    class TimeoutPremiumContext(FakeContext):
+        def __init__(self):
+            self.page = TimeoutPremiumPage()
+            self.saved_path = None
+
+    class TimeoutPremiumBrowser(FakeBrowser):
+        def __init__(self):
+            self.context = TimeoutPremiumContext()
+
+    monkeypatch.setattr(client_module, "PlaywrightTimeoutError", FakePage.timeout_error)
+    config = ERPConfig(
+        login_url="http://erp/login",
+        price_page_url="http://erp/premium",
+        storage_state=tmp_path / "erp.json",
+        username="alice",
+        password="secret",
+        selectors=ERPSelectors(
+            username_input="#user",
+            password_input="#pass",
+            login_submit="#login",
+            search_input="#search",
+        ),
+        wait_timeout_ms=8000,
+        lookup_type="ldswj_premium",
+        api=client_module.ERPAPIConfig(
+            premium_price_url="http://erp/exportcostprice4xcx",
+            premium_price_id="yzfdkja6bvh",
+        ),
+    )
+    browser = TimeoutPremiumBrowser()
+
+    with pytest.raises(client_module.ERPPriceNotFound) as exc_info:
+        await ERPPriceClient(browser, config).get_price_quote("2705")
+
+    message = str(exc_info.value)
+    assert "优质价接口请求超时（30秒）：2705" in message
+    assert "Call log" not in message
+    assert "cookie" not in message
+    assert browser.context.page.request.calls == 3

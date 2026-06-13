@@ -303,18 +303,25 @@ class ERPPriceClient:
         tried_words = []
         for word in sku.search_words:
             tried_words.append(word)
-            response = await page.request.post(
-                self.config.api.premium_price_url,
-                form={
-                    "page": "0",
-                    "priceid": self.config.api.premium_price_id,
-                    "word": word,
-                    "label": "",
-                    "labeltype": "",
-                    "get_profit_rate": "0",
-                },
-                timeout=self.config.wait_timeout_ms,
-            )
+            timeout_ms = self._premium_api_timeout_ms()
+            try:
+                response = await page.request.post(
+                    self.config.api.premium_price_url,
+                    form={
+                        "page": "0",
+                        "priceid": self.config.api.premium_price_id,
+                        "word": word,
+                        "label": "",
+                        "labeltype": "",
+                        "get_profit_rate": "0",
+                    },
+                    timeout=timeout_ms,
+                )
+            except PlaywrightTimeoutError as exc:
+                raise ERPPriceNotFound(
+                    f"优质价接口请求超时（{timeout_ms // 1000}秒）：{word}。请稍后重试，"
+                    "或检查 ERP/网络是否卡顿。"
+                ) from None
             data = self._loads_json(await response.text())
             products = data.get("lists") or []
             if products:
@@ -502,6 +509,9 @@ class ERPPriceClient:
             self._compact_model(f"{sku.search_word}-单孔"),
             self._compact_model(f"{sku.search_word}-吊坠"),
         }
+
+    def _premium_api_timeout_ms(self) -> int:
+        return max(self.config.wait_timeout_ms, 30000)
 
     def _color_matches(self, candidate: str, color_key: str) -> bool:
         compact_candidate = self._compact_color(candidate)

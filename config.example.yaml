@@ -22,7 +22,7 @@ erp:
     premium_price_id: "<优质价ID>"
 
   price_regex: "([0-9]+(?:\\.[0-9]+)?)"
-  wait_timeout_ms: 8000
+  wait_timeout_ms: 30000
 
 pdd:
   login_url: "https://mms.pinduoduo.com/"
