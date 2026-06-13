@@ -501,7 +501,7 @@ class ERPPriceClient:
 
     def _model_matches_install_size_fallback(self, candidate: str, sku: "ParsedSKU") -> bool:
         base_key = self._compact_model(sku.search_word)
-        if sku.model_key != f"{base_key}-33":
+        if not re.fullmatch(rf"{re.escape(base_key)}-\d+", sku.model_key):
             return False
 
         candidate_key = self._compact_model(candidate)

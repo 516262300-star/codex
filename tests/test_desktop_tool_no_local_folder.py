@@ -18,10 +18,10 @@ def test_parse_material_sku_lookup_ignores_single_hole_suffix():
     assert color == "铬"
 
 
-def test_parse_material_sku_lookup_extracts_parenthesized_single_hole_size():
+def test_parse_material_sku_lookup_ignores_parenthesized_single_hole_size():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("2075-哑镍拉丝-单孔（33）")
 
-    assert lookup_name == "2075-33"
+    assert lookup_name == "2075"
     assert color == "哑镍拉丝"
 
 

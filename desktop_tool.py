@@ -438,6 +438,8 @@ def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
         size_index = -1
         size_value = ""
         for index, part in enumerate(parts[1:], start=1):
+            if re.search(r"单孔|吊坠", part):
+                continue
             size_match = re.match(r"^(\d+)(?:尺寸图|尺寸|直径|mm|MM)?$", part)
             if not size_match:
                 size_match = re.search(r"[（(](\d+)(?:尺寸图|尺寸|直径|mm|MM)?[）)]", part)

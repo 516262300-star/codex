@@ -526,6 +526,64 @@ async def test_get_price_from_premium_book_falls_back_from_33_to_single_hole(tmp
 
 
 @pytest.mark.asyncio
+async def test_get_price_from_premium_book_falls_back_from_any_missing_size_to_single_hole(tmp_path, monkeypatch):
+    import skills.erp_price.client as client_module
+
+    class SingleHolePremiumRequest:
+        async def post(self, *_args, **_kwargs):
+            return FakeAPIResponse(
+                {
+                    "lists": [
+                        {"name": "6601-单孔", "colors": [{"color": "古铜色", "price": 9.5}]},
+                        {"name": "6601-20直径", "colors": [{"color": "古铜色", "price": 10.5}]},
+                        {"name": "6601-30直径", "colors": [{"color": "古铜色", "price": 12.5}]},
+                    ]
+                }
+            )
+
+    class SingleHolePremiumPage(FakePage):
+        def __init__(self):
+            super().__init__()
+            self.logged_in = True
+            self.request = SingleHolePremiumRequest()
+
+    class SingleHolePremiumContext(FakeContext):
+        def __init__(self):
+            self.page = SingleHolePremiumPage()
+            self.saved_path = None
+
+    class SingleHolePremiumBrowser(FakeBrowser):
+        def __init__(self):
+            self.context = SingleHolePremiumContext()
+
+    monkeypatch.setattr(client_module, "PlaywrightTimeoutError", FakePage.timeout_error)
+    config = ERPConfig(
+        login_url="http://erp/login",
+        price_page_url="http://erp/premium",
+        storage_state=tmp_path / "erp.json",
+        username="alice",
+        password="secret",
+        selectors=ERPSelectors(
+            username_input="#user",
+            password_input="#pass",
+            login_submit="#login",
+            search_input="#search",
+        ),
+        lookup_type="ldswj_premium",
+        api=client_module.ERPAPIConfig(
+            premium_price_url="http://erp/exportcostprice4xcx",
+            premium_price_id="yzfdkja6bvh",
+        ),
+    )
+
+    quote = await ERPPriceClient(SingleHolePremiumBrowser(), config).get_price_quote("6601-24", color="古铜色")
+
+    assert quote.product_name == "6601-单孔"
+    assert quote.color_name == "古铜色"
+    assert quote.price == Decimal("9.5")
+
+
+@pytest.mark.asyncio
 async def test_get_price_from_premium_book_hides_raw_timeout_log(tmp_path, monkeypatch):
     import skills.erp_price.client as client_module
 
