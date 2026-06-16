@@ -74,6 +74,17 @@ def natural_key(text: str) -> tuple[int, str]:
     return (int(match.group(0)) if match else 999999, text.lower())
 
 
+def model_size_key(lookup_name: str) -> tuple[int, str, int]:
+    match = re.match(r"^(\d+)([A-Za-z]*)(?:-(\d+))?$", lookup_name.strip())
+    if match:
+        return (int(match.group(1)), match.group(2).lower(), int(match.group(3) or 999999))
+
+    numbers = re.findall(r"\d+", lookup_name)
+    model = int(numbers[0]) if numbers else 999999
+    size = int(numbers[1]) if len(numbers) > 1 else 999999
+    return (model, lookup_name.lower(), size)
+
+
 def compact_name(text: str) -> str:
     stem = Path(text).stem
     return re.sub(r"[\s#/_\\\-.]+", "", stem).lower()
@@ -391,7 +402,10 @@ def material_file_sku_name(file: dict[str, Any]) -> str:
 
 
 def material_sku_sort_key(file: dict[str, Any]) -> tuple[Any, ...]:
-    return natural_key(str(file.get("filename") or ""))
+    filename = str(file.get("filename") or "")
+    sku_name = material_file_sku_name(file)
+    lookup_name, _color = parse_material_sku_lookup(sku_name)
+    return (*model_size_key(lookup_name), natural_key(filename))
 
 
 PRICE_BOOK_COLOR_WORDS = (
@@ -1094,8 +1108,8 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         ],
         "skus": skus,
         "marketPrice": max((Decimal(str(spec.get("single_price") or "0")) for spec in sku_specs), default=Decimal("0")),
-        "batchDiscount": "9.5",
-        "productCode": str(package.get("erp_model") or ""),
+        "batchDiscount": "9.9",
+        "productCode": str(package.get("price_multiplier") or meta.price_multiplier),
         "_localSafetyMode": True,
     }
 

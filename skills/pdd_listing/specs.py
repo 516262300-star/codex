@@ -7,6 +7,9 @@ from typing import Any
 
 
 SEPARATOR_RE = re.compile(r"^[\s\-_—/]+|[\s\-_—/]+$")
+SPEC_NAME_DISPLAY_ALIASES = {
+    "亮镍": "钛银",
+}
 
 
 @dataclass(frozen=True)
@@ -33,11 +36,16 @@ def normalize_spec_name(value: str) -> str:
 def derive_spec_name(sku_name: str, erp_model: str) -> str:
     sku = sku_name.strip()
     model = erp_model.strip()
+    spec_name = ""
     if model and sku.lower().startswith(model.lower()):
         suffix = normalize_spec_name(sku[len(model) :])
         if suffix:
-            return suffix
-    return normalize_spec_name(sku)
+            spec_name = suffix
+    if not spec_name:
+        spec_name = normalize_spec_name(sku)
+    for source, display in SPEC_NAME_DISPLAY_ALIASES.items():
+        spec_name = spec_name.replace(source, display)
+    return spec_name
 
 
 def build_sku_specs(

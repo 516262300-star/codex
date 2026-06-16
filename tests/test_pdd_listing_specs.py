@@ -7,6 +7,10 @@ def test_derive_spec_name_strips_erp_model_prefix():
     assert derive_spec_name("8250铬色", "8250") == "铬色"
 
 
+def test_derive_spec_name_displays_bright_nickel_as_titanium_silver():
+    assert derive_spec_name("6787-亮镍-96尺寸图", "6787") == "钛银-96尺寸图"
+
+
 def test_build_sku_specs_pairs_name_price_stock_and_image():
     specs = build_sku_specs(
         [

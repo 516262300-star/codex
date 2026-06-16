@@ -39,6 +39,20 @@ def test_parse_material_sku_lookup_maps_bright_gold_to_rose_gold():
     assert color == "玫瑰金"
 
 
+def test_material_sku_sort_key_orders_sizes_numerically():
+    images = [
+        {"filename": "6787-亮镍-128尺寸图.jpg"},
+        {"filename": "6787-亮镍-192尺寸图.jpg"},
+        {"filename": "6787-亮镍-96尺寸图.jpg"},
+    ]
+
+    assert [item["filename"] for item in sorted(images, key=desktop_tool.material_sku_sort_key)] == [
+        "6787-亮镍-96尺寸图.jpg",
+        "6787-亮镍-128尺寸图.jpg",
+        "6787-亮镍-192尺寸图.jpg",
+    ]
+
+
 def test_price_book_color_matches_short_chrome_name():
     client = ERPPriceClient.__new__(ERPPriceClient)
 
@@ -88,3 +102,5 @@ def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     assert data["detailImages"] == ["https://example.test/detail.jpg"]
     assert data["skus"][0]["productCode"] == "8105#古铜色"
     assert data["marketPrice"] == Decimal("19.00")
+    assert data["batchDiscount"] == "9.9"
+    assert data["productCode"] == "1.8"
