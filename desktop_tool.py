@@ -608,6 +608,8 @@ async def upload_plan_payload(
         "category_keyword": "小拉手",
         "price_multiplier": dry["meta"]["price_multiplier"],
         "price_cent_ending": str(price_cent_ending),
+        "batchDiscount": "9.9",
+        "productCode": str(dry["meta"]["price_multiplier"]),
         "meta": dry["meta"],
         "main_images": [
             {

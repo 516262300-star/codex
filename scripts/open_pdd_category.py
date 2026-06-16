@@ -866,6 +866,7 @@ async def fill_specs(page: Page, payload: dict[str, Any]) -> list[dict[str, Any]
         await scroll_text_into_view(page, "价格及库存")
         await page.wait_for_timeout(800)
         results.extend(await fill_price_rows(page, specs))
+        results.extend(await fill_listing_extra_fields(page, package))
     results.append({"field": "规格区域快照", "status": "read", "values": await collect_specs_area(page)})
     return results
 
@@ -1412,6 +1413,69 @@ async def fill_price_rows(page: Page, specs: list[dict[str, Any]]) -> list[dict[
 
         for label, value in zip(labels, values):
             results.append({"field": f"{spec_name} {label}", "status": "filled", "value": value})
+    return results
+
+
+def listing_extra_product_code(package: dict[str, Any]) -> str:
+    meta = package.get("meta") if isinstance(package.get("meta"), dict) else {}
+    return str(package.get("productCode") or package.get("product_code") or package.get("price_multiplier") or meta.get("price_multiplier") or "").strip()
+
+
+def listing_extra_batch_discount(package: dict[str, Any]) -> str:
+    return str(package.get("batchDiscount") or package.get("batch_discount") or "9.9").strip()
+
+
+async def fill_listing_extra_fields(page: Page, package: dict[str, Any]) -> list[dict[str, Any]]:
+    fields = [
+        {"field": "满件折扣", "area": "#batch_discount", "value": listing_extra_batch_discount(package)},
+        {"field": "商品编码", "area": "#out_goods_sn", "value": listing_extra_product_code(package)},
+    ]
+    results: list[dict[str, Any]] = []
+
+    await page.wait_for_timeout(300)
+    filled = await page.evaluate(
+        """
+        ({ fields }) => {
+          const visible = (el) => {
+            const style = getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          };
+          const setInput = (input, value) => {
+            input.focus();
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            if (setter) setter.call(input, String(value ?? ''));
+            else input.value = String(value ?? '');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new Event('blur', { bubbles: true }));
+            input.blur();
+          };
+
+          return fields.map((field) => {
+            const value = String(field.value || '').trim();
+            if (!value) return { field: field.field, ok: false, skipped: true, value };
+            const area = document.querySelector(field.area);
+            if (!area) return { field: field.field, ok: false, reason: 'area_not_found', value };
+            const input = Array.from(area.querySelectorAll('input')).find(visible);
+            if (!input) return { field: field.field, ok: false, reason: 'input_not_found', value };
+            input.scrollIntoView({ block: 'center', inline: 'nearest' });
+            setInput(input, value);
+            return { field: field.field, ok: true, value };
+          });
+        }
+        """,
+        {"fields": fields},
+    )
+    await page.wait_for_timeout(500)
+
+    for item in filled:
+        if item.get("ok"):
+            results.append({"field": item.get("field"), "status": "filled", "value": item.get("value")})
+        elif item.get("skipped"):
+            results.append({"field": item.get("field"), "status": "skipped", "message": "值为空"})
+        else:
+            results.append({"field": item.get("field"), "status": "failed", "value": item.get("value"), "message": item.get("reason")})
     return results
 
 

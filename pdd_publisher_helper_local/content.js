@@ -645,6 +645,9 @@
         reportWorkbenchProgress('detail_sku', '详情页：正在创建规格、上传尺寸图、填写价格库存');
         var skuData = {};
         if (productData.skuAxes) skuData.skuAxes = productData.skuAxes;
+        if (productData.marketPrice) skuData.marketPrice = productData.marketPrice;
+        if (productData.batchDiscount) skuData.batchDiscount = productData.batchDiscount;
+        if (productData.productCode) skuData.productCode = productData.productCode;
         if (productData.skus) {
           skuData.skuList = productData.skus.map(function (sku) {
             var specValues = {};
