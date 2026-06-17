@@ -483,8 +483,8 @@ async def category_prefill_state(page: Page) -> dict[str, Any]:
           const hasPreflight =
             body.includes('商品主图') &&
             body.includes('商品标题') &&
-            body.includes('商品分类') &&
             (body.includes('下一步') || body.includes('完善商品信息'));
+          const hasCategory = body.includes('商品分类');
           const titleInput =
             document.querySelector('#goodsNameId input[type="text"]') ||
             document.querySelector('#goods_name input[type="text"]') ||
@@ -503,6 +503,7 @@ async def category_prefill_state(page: Page) -> dict[str, Any]:
             is_preflight: hasPreflight,
             title: titleInput ? titleInput.value || '' : '',
             image_count: imageCount,
+            has_category: hasCategory,
             has_next: body.includes('下一步') || body.includes('完善商品信息'),
           };
         }
@@ -609,8 +610,10 @@ async def complete_category_prefill_page(page: Page, payload: dict[str, Any], st
         results.append({"field": "发布前商品标题", "status": "already_ok", "value": state.get("title") or title})
 
     category_path = str(payload.get("category") or "").strip()
-    if category_path:
+    if category_path and state.get("has_category"):
         results.append(await select_category_on_prefill_page(page, category_path))
+    elif category_path:
+        results.append({"field": "发布前商品分类", "status": "skipped", "message": "当前发布前信息页没有商品分类区域"})
 
     if await click_visible_text_contains(page, "下一步"):
         try:

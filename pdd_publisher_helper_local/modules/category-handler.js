@@ -922,6 +922,12 @@
    * - unknown: 无法识别
    */
   function detectPageVariant() {
+    var bodyText = document.body && (document.body.innerText || document.body.textContent || '');
+    if (bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') &&
+        (bodyText.includes('下一步') || bodyText.includes('完善商品信息'))) {
+      log('检测到 v4 发布前信息页');
+      return 'v4';
+    }
     // v2: 传统类目树
     if (document.querySelector('.item-group-container-v2') || document.querySelector('.staple-category-container')) {
       log('检测到 v2 类目树页面');
