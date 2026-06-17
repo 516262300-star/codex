@@ -12,9 +12,16 @@
 
   function detectPageType() {
     var url = window.location.href;
+    var bodyText = document.body && (document.body.innerText || document.body.textContent || '');
     if (url.includes('/goods/goods_add/index')) return 'detail';
     if (url.includes('/goods/category')) return 'category';
     if (url.includes('/publish/new') || url.includes('/publish/edit')) return 'detail';
+    if (bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') &&
+        (bodyText.includes('下一步') || bodyText.includes('完善商品信息'))) return 'category';
+    if (bodyText && (bodyText.includes('选择商品分类') || bodyText.includes('商品分类')) &&
+        (bodyText.includes('下一步') || bodyText.includes('确认'))) return 'category';
+    if (bodyText && (bodyText.includes('商品视频') || bodyText.includes('商品讲解视频') ||
+        bodyText.includes('保存草稿') || bodyText.includes('商品详情'))) return 'detail';
     if (url.includes('/ssp/') || url.includes('/ad/') || url.includes('/promotion/')) return 'promotion';
     if (url.includes('/goods/goods_list')) return 'goods_list';
     return 'unknown';
@@ -22,9 +29,10 @@
 
   function refreshPageType() {
     var url = window.location.href;
-    if (url !== LAST_URL) {
+    var nextType = detectPageType();
+    if (url !== LAST_URL || nextType !== PAGE_TYPE) {
       LAST_URL = url;
-      PAGE_TYPE = detectPageType();
+      PAGE_TYPE = nextType;
       if (Logger) Logger.info('检测到页面地址变化，页面类型更新为:', PAGE_TYPE, url);
       reportWorkbenchProgress('page_changed', '检测到页面跳转，当前页面类型：' + PAGE_TYPE, { url: url });
     }

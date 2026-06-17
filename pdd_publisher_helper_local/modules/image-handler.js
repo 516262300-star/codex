@@ -373,6 +373,86 @@
     return 'mp4';
   }
 
+  function chooseRecordedVideoMimeType() {
+    if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+    var types = [
+      'video/mp4;codecs="avc1.42E01E"',
+      'video/mp4',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    for (var i = 0; i < types.length; i++) {
+      if (MediaRecorder.isTypeSupported(types[i])) return types[i];
+    }
+    return '';
+  }
+
+  function extensionFromVideoMime(mimeType) {
+    return (mimeType || '').includes('mp4') ? 'mp4' : 'webm';
+  }
+
+  function generateVideoFromImageBlob(imageBlob, options) {
+    options = options || {};
+    var durationMs = options.durationMs || 4500;
+    var targetWidth = options.width || options.size || 960;
+    var targetHeight = options.height || options.size || 960;
+    var mimeType = chooseRecordedVideoMimeType();
+    if (!mimeType) return Promise.reject(new Error('当前浏览器不支持从主图生成视频'));
+
+    return createImageBitmap(imageBlob).then(function (bitmap) {
+      return new Promise(function (resolve, reject) {
+        var canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        var ctx = canvas.getContext('2d');
+
+        function drawFrame() {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, targetWidth, targetHeight);
+          var scale = Math.min(targetWidth / bitmap.width, targetHeight / bitmap.height);
+          var width = Math.round(bitmap.width * scale);
+          var height = Math.round(bitmap.height * scale);
+          var x = Math.round((targetWidth - width) / 2);
+          var y = Math.round((targetHeight - height) / 2);
+          ctx.drawImage(bitmap, x, y, width, height);
+        }
+
+        drawFrame();
+        var stream = canvas.captureStream(12);
+        var chunks = [];
+        var recorder;
+        try {
+          recorder = new MediaRecorder(stream, { mimeType: mimeType });
+        } catch (err) {
+          reject(err);
+          return;
+        }
+        recorder.ondataavailable = function (event) {
+          if (event.data && event.data.size > 0) chunks.push(event.data);
+        };
+        recorder.onerror = function (event) {
+          reject((event && event.error) || new Error('主图视频生成失败'));
+        };
+        recorder.onstop = function () {
+          stream.getTracks().forEach(function (track) { track.stop(); });
+          if (bitmap.close) bitmap.close();
+          resolve({
+            blob: new Blob(chunks, { type: mimeType }),
+            mimeType: mimeType,
+            extension: extensionFromVideoMime(mimeType)
+          });
+        };
+        recorder.start(500);
+        var drawTimer = setInterval(drawFrame, 250);
+        setTimeout(function () {
+          clearInterval(drawTimer);
+          if (recorder.state !== 'inactive') recorder.stop();
+        }, durationMs);
+      });
+    });
+  }
+
   function uploadVideo(videoItem, labels, options) {
     options = options || {};
     var Toast = options.Toast;
@@ -402,25 +482,56 @@
         return false;
       }
 
-      var mimeType = result.mimeType || 'video/mp4';
-      if (!mimeType.includes('video')) mimeType = 'video/mp4';
-      var ext = videoExtensionFrom(url, mimeType);
-      var fileName = (typeof videoItem === 'object' && videoItem.name) || (labelText.replace(/\s+/g, '') + '.' + ext);
-      var file = new File([result.blob], fileName, { type: mimeType });
-      var dataTransfer = new DataTransfer();
-      dataTransfer.items.add(file);
-      fileInput.files = dataTransfer.files;
-      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-      fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-      console.log('[PDD填充插件] 已触发' + labelText + '上传: ' + fileName + ', ' + (file.size / 1024 / 1024).toFixed(2) + 'MB');
-      if (Toast) Toast.show(labelText + '上传中...', 'info', 6000);
-      return waitForVideoUploadComplete(labels, delay).then(function (ok) {
-        if (ok) {
-          if (Toast) Toast.show(labelText + '上传完成', 'success', 4000);
-        } else {
-          if (Toast) Toast.show(labelText + '上传未确认，请检查页面', 'warning', 5000);
-        }
-        return ok;
+      var sourceIsImage = (result.mimeType || '').indexOf('image/') === 0 || !!(videoItem && videoItem.makeVideoFromImage);
+      var sourcePromise;
+      if (sourceIsImage) {
+        if (Toast) Toast.show('正在用主图生成' + labelText + '...', 'info', 4000);
+        var isExplainVideo = labels.indexOf('商品讲解视频') >= 0 || labelText.indexOf('讲解') >= 0;
+        sourcePromise = generateVideoFromImageBlob(result.blob, isExplainVideo ? {
+          width: 720,
+          height: 1280,
+          durationMs: 12000
+        } : {
+          width: 960,
+          height: 960,
+          durationMs: 6000
+        }).then(function (generated) {
+          return {
+            blob: generated.blob,
+            mimeType: generated.mimeType,
+            ext: generated.extension
+          };
+        });
+      } else {
+        var mimeType = result.mimeType || 'video/mp4';
+        if (!mimeType.includes('video')) mimeType = 'video/mp4';
+        sourcePromise = Promise.resolve({
+          blob: result.blob,
+          mimeType: mimeType,
+          ext: videoExtensionFrom(url, mimeType)
+        });
+      }
+
+      return sourcePromise.then(function (source) {
+        var defaultName = labelText.replace(/\s+/g, '') + '.' + source.ext;
+        var fileName = (typeof videoItem === 'object' && videoItem.name) || defaultName;
+        fileName = fileName.replace(/\.(jpg|jpeg|png|webp|mp4|mov|webm|m4v)$/i, '.' + source.ext);
+        var file = new File([source.blob], fileName, { type: source.mimeType });
+        var dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        fileInput.files = dataTransfer.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+        console.log('[PDD填充插件] 已触发' + labelText + '上传: ' + fileName + ', ' + (file.size / 1024 / 1024).toFixed(2) + 'MB, type=' + source.mimeType);
+        if (Toast) Toast.show(labelText + '上传中...', 'info', 6000);
+        return waitForVideoUploadComplete(labels, delay).then(function (ok) {
+          if (ok) {
+            if (Toast) Toast.show(labelText + '上传完成', 'success', 4000);
+          } else {
+            if (Toast) Toast.show(labelText + '上传未确认，请检查页面', 'warning', 5000);
+          }
+          return ok;
+        });
       });
     });
   }

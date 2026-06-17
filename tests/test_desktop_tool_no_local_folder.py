@@ -126,3 +126,37 @@ def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     assert data["marketPrice"] == Decimal("19.00")
     assert data["batchDiscount"] == "9.9"
     assert data["productCode"] == "1.8"
+
+
+def test_plugin_product_json_falls_back_to_main_image_generated_videos(tmp_path, monkeypatch):
+    package = {
+        "product_folder": str(tmp_path / "missing-product-folder"),
+        "category_path": desktop_tool.DEFAULT_CATEGORY_PATH,
+        "price_multiplier": "1.8",
+        "meta": {
+            "erp_model": "8105",
+            "category_path": desktop_tool.DEFAULT_CATEGORY_PATH,
+            "price_multiplier": "1.8",
+            "material": "黄铜",
+            "stock_per_sku": 500,
+        },
+        "main_images": [{"index": 1, "url": "https://example.test/main.jpg"}],
+        "main_videos": [],
+        "detail_images": [],
+        "sku_specs": [],
+    }
+
+    monkeypatch.setattr(desktop_tool, "cached_recommended_title", lambda _folder: "")
+
+    data = desktop_tool.plugin_product_json(package)
+
+    assert data["productVideo"] == {
+        "url": "https://example.test/main.jpg",
+        "name": "商品视频.webm",
+        "makeVideoFromImage": True,
+    }
+    assert data["explainVideo"] == {
+        "url": "https://example.test/main.jpg",
+        "name": "商品讲解视频.webm",
+        "makeVideoFromImage": True,
+    }

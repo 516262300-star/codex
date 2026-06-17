@@ -1112,10 +1112,15 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
     category_parts = [part.strip() for part in category_path.split(">") if part.strip()]
     category_parts += [""] * (4 - len(category_parts))
 
-    main_images = {
-        f"image{index}": item.get("url")
-        for index, item in enumerate(package.get("main_images") or [], start=1)
+    main_image_urls = [
+        str(item.get("url") or "")
+        for item in package.get("main_images") or []
         if item.get("url")
+    ]
+    main_images = {
+        f"image{index}": url
+        for index, url in enumerate(main_image_urls, start=1)
+        if url
     }
     detail_images = [
         item.get("url")
@@ -1129,6 +1134,17 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
     ]
     product_video = main_video_urls[0] if main_video_urls else ""
     explain_video = main_video_urls[1] if len(main_video_urls) > 1 else product_video
+    if not product_video and main_image_urls:
+        product_video = {
+            "url": main_image_urls[0],
+            "name": "商品视频.webm",
+            "makeVideoFromImage": True,
+        }
+        explain_video = {
+            "url": main_image_urls[0],
+            "name": "商品讲解视频.webm",
+            "makeVideoFromImage": True,
+        }
     sku_specs = list(package.get("sku_specs") or [])
     skus = [
         {
