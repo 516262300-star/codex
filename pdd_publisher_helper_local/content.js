@@ -1026,6 +1026,14 @@
       };
     }
 
+    function materialExtension(file) {
+      var ext = String((file && file.extension) || '').toLowerCase().replace(/^\./, '');
+      if (ext) return ext;
+      var filename = String((file && file.filename) || (file && file.name) || '').toLowerCase();
+      var match = filename.match(/\.([a-z0-9]+)$/);
+      return match ? match[1] : '';
+    }
+
     function listMaterialDir(dirId, pageSize) {
       return fetch('https://mms.pinduoduo.com/garner/mms/file/dir_list', {
         method: 'POST',
@@ -1096,7 +1104,7 @@
             childChain = childChain.then(function () {
               return listMaterialDir(child.id, 200).then(function (childListing) {
                 children[child.name] = childListing.files.filter(function (file) {
-                  return ['jpg', 'jpeg', 'png', 'webp'].indexOf(String(file.extension || '').toLowerCase()) >= 0;
+                  return ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov', 'webm', 'm4v'].indexOf(materialExtension(file)) >= 0;
                 });
               });
             });

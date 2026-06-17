@@ -217,17 +217,71 @@
     });
     if (candidates.length === 0) return null;
 
+    function visibleBox(el) {
+      var current = el;
+      for (var depth = 0; current && depth < 8; depth++, current = current.parentElement) {
+        var style = window.getComputedStyle(current);
+        var rect = current.getBoundingClientRect();
+        if (style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 20 && rect.height > 20) return rect;
+      }
+      return el.getBoundingClientRect();
+    }
+
+    function visible(el) {
+      var style = window.getComputedStyle(el);
+      var rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    function findLabelRect() {
+      var best = null;
+      var all = Array.prototype.slice.call(document.querySelectorAll('label, span, div, p, section'));
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (!visible(el)) continue;
+        var text = (el.innerText || el.textContent || '').replace(/\s+/g, '');
+        if (!text) continue;
+        var matched = false;
+        for (var li = 0; li < labels.length; li++) {
+          if (text.indexOf(String(labels[li]).replace(/\s+/g, '')) >= 0) {
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) continue;
+        var rect = el.getBoundingClientRect();
+        var score = text.length + rect.width / 100 + rect.height / 100;
+        if (!best || score < best.score) best = { rect: rect, score: score, text: text };
+      }
+      return best && best.rect;
+    }
+
+    var labelRect = findLabelRect();
+
     function labelScore(input, index) {
       var text = '';
       var current = input;
-      for (var depth = 0; current && depth < 9; depth++, current = current.parentElement) {
+      for (var depth = 0; current && depth < 12; depth++, current = current.parentElement) {
         text += ' ' + (current.innerText || current.textContent || '');
       }
       var score = index;
       for (var li = 0; li < labels.length; li++) {
         if (text.includes(labels[li])) score -= 1000 + labels[li].length;
       }
-      var rect = input.getBoundingClientRect();
+      if (mediaType === 'video') {
+        if (labels.indexOf('商品视频') >= 0 && text.includes('商品讲解视频')) score += 1200;
+        if (labels.indexOf('商品讲解视频') >= 0 && text.includes('商品视频') && !text.includes('商品讲解视频')) score += 800;
+        if (text.includes('商品主图') || text.includes('详情图') || text.includes('规格图') || text.includes('SKU')) score += 2000;
+      }
+      var rect = visibleBox(input);
+      if (labelRect) {
+        var verticalDistance = 0;
+        if (rect.top < labelRect.top) verticalDistance = labelRect.top - rect.top;
+        else if (rect.top > labelRect.bottom) verticalDistance = rect.top - labelRect.bottom;
+        var horizontalDistance = Math.abs(rect.left - labelRect.left);
+        score += verticalDistance + horizontalDistance / 10;
+        if (rect.top >= labelRect.top - 20 && rect.top <= labelRect.bottom + 220) score -= 500;
+      }
       score += Math.max(0, rect.top);
       return score;
     }
@@ -237,6 +291,72 @@
     }).sort(function (a, b) {
       return a.score - b.score;
     })[0].input;
+  }
+
+  function findUploadAreaNearText(labels) {
+    labels = Array.isArray(labels) ? labels : [labels];
+    var all = Array.prototype.slice.call(document.querySelectorAll('section, div, form, fieldset'));
+    var best = null;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var text = (el.innerText || el.textContent || '').replace(/\s+/g, '');
+      if (!text) continue;
+      var matched = false;
+      for (var li = 0; li < labels.length; li++) {
+        if (text.indexOf(String(labels[li]).replace(/\s+/g, '')) >= 0) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width <= 20 || rect.height <= 20) continue;
+      var score = text.length + rect.height + rect.width / 100;
+      if (!best || score < best.score) best = { el: el, score: score };
+    }
+    return best && best.el;
+  }
+
+  function waitForVideoUploadComplete(labels, delay) {
+    var area = findUploadAreaNearText(labels) || document.body;
+    var start = Date.now();
+    var maxWait = 45000;
+    var interval = 1500;
+
+    return new Promise(function (resolve) {
+      function check() {
+        var elapsed = Date.now() - start;
+        var text = area.innerText || area.textContent || '';
+        var hasFailure = /上传失败|重新上传|上传错误|失败/.test(text);
+        var hasLoading = !!(
+          area.querySelector('[class*="uploading"], [class*="progress"], [class*="loading"], [class*="Spn_spinning"]')
+        );
+        var hasVideo = !!(
+          area.querySelector('video') ||
+          area.querySelector('[style*=".mp4"], [style*=".mov"], [style*=".webm"]') ||
+          /更换视频|删除视频|预览|已上传/.test(text)
+        );
+
+        if (hasVideo && !hasFailure) {
+          resolve(true);
+          return;
+        }
+        if (hasFailure) {
+          resolve(false);
+          return;
+        }
+        if (!hasLoading && elapsed > 12000) {
+          resolve(true);
+          return;
+        }
+        if (elapsed >= maxWait) {
+          resolve(false);
+          return;
+        }
+        setTimeout(check, interval);
+      }
+      setTimeout(check, interval);
+    });
   }
 
   function videoExtensionFrom(url, mimeType) {
@@ -294,7 +414,14 @@
       fileInput.dispatchEvent(new Event('input', { bubbles: true }));
       console.log('[PDD填充插件] 已触发' + labelText + '上传: ' + fileName + ', ' + (file.size / 1024 / 1024).toFixed(2) + 'MB');
       if (Toast) Toast.show(labelText + '上传中...', 'info', 6000);
-      return delay(5000).then(function () { return true; });
+      return waitForVideoUploadComplete(labels, delay).then(function (ok) {
+        if (ok) {
+          if (Toast) Toast.show(labelText + '上传完成', 'success', 4000);
+        } else {
+          if (Toast) Toast.show(labelText + '上传未确认，请检查页面', 'warning', 5000);
+        }
+        return ok;
+      });
     });
   }
 

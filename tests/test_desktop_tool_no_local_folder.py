@@ -78,6 +78,11 @@ def test_money_with_cent_ending_sets_second_decimal_digit():
     assert desktop_tool.money_with_cent_ending(Decimal("23.044"), "9") == Decimal("23.09")
 
 
+def test_material_video_detection_falls_back_to_filename_suffix():
+    assert desktop_tool.is_material_video({"filename": "主图视频.mp4", "extension": ""})
+    assert desktop_tool.is_material_video({"filename": "讲解视频.MOV"})
+
+
 def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     package = {
         "product_folder": str(tmp_path / "missing-product-folder"),
