@@ -463,6 +463,167 @@ async def select_category_by_path(page: Page, category_path: str) -> list[dict[s
     return results
 
 
+def main_image_urls_from_payload(payload: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    for item in payload.get("main_images") or []:
+        if isinstance(item, dict):
+            url = str(item.get("url") or "").strip()
+        else:
+            url = str(item or "").strip()
+        if url:
+            urls.append(url)
+    return urls
+
+
+async def category_prefill_state(page: Page) -> dict[str, Any]:
+    return await page.evaluate(
+        """
+        () => {
+          const body = document.body.innerText || '';
+          const hasPreflight =
+            body.includes('商品主图') &&
+            body.includes('商品标题') &&
+            body.includes('商品分类') &&
+            (body.includes('下一步') || body.includes('完善商品信息'));
+          const titleInput =
+            document.querySelector('#goodsNameId input[type="text"]') ||
+            document.querySelector('#goods_name input[type="text"]') ||
+            Array.from(document.querySelectorAll('input')).find(input => (input.getAttribute('placeholder') || '').includes('商品标题'));
+          const uploadMatch = body.match(/上传图片\\s*\\((\\d+)\\s*\\/\\s*\\d+\\)/);
+          let imageCount = uploadMatch ? Number(uploadMatch[1]) : 0;
+          if (!imageCount) {
+            const carousel = document.querySelector('#goodsCarousel') || document.body;
+            imageCount = Array.from(carousel.querySelectorAll('img'))
+              .filter(img => {
+                const rect = img.getBoundingClientRect();
+                return rect.width >= 24 && rect.height >= 24;
+              }).length;
+          }
+          return {
+            is_preflight: hasPreflight,
+            title: titleInput ? titleInput.value || '' : '',
+            image_count: imageCount,
+            has_next: body.includes('下一步') || body.includes('完善商品信息'),
+          };
+        }
+        """
+    )
+
+
+async def fill_category_prefill_title(page: Page, title: str) -> dict[str, Any]:
+    title = title.strip()
+    if not title:
+        return {"field": "发布前商品标题", "status": "skipped", "message": "标题为空"}
+
+    filled = await page.evaluate(
+        """
+        ({ title }) => {
+          const visible = (el) => {
+            const style = getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          };
+          const input =
+            document.querySelector('#goodsNameId input[type="text"]') ||
+            document.querySelector('#goods_name input[type="text"]') ||
+            Array.from(document.querySelectorAll('input')).find(input => visible(input) && (input.getAttribute('placeholder') || '').includes('商品标题'));
+          if (!input) return false;
+          input.focus();
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          if (setter) setter.call(input, title);
+          else input.value = title;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          input.dispatchEvent(new Event('blur', { bubbles: true }));
+          input.blur();
+          return true;
+        }
+        """,
+        {"title": title},
+    )
+    await page.wait_for_timeout(2000)
+    if not filled:
+        return {"field": "发布前商品标题", "status": "failed", "message": "找不到标题输入框"}
+    return {"field": "发布前商品标题", "status": "filled", "value": title}
+
+
+async def upload_category_prefill_main_images(page: Page, urls: list[str]) -> dict[str, Any]:
+    if not urls:
+        return {"field": "发布前商品主图", "status": "skipped", "message": "没有主图链接"}
+
+    input_count = await page.locator('input[type="file"]').count()
+    if input_count < 1:
+        return {"field": "发布前商品主图", "status": "failed", "message": "找不到图片上传 input"}
+
+    upload_dir = ROOT / ".tmp_tool" / "category_preflight_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    for index, url in enumerate(urls[:10], start=1):
+        response = await page.request.get(url, timeout=60000)
+        if not response.ok:
+            return {"field": "发布前商品主图", "status": "failed", "message": f"主图下载失败: HTTP {response.status}"}
+        content_type = response.headers.get("content-type", "")
+        suffix = ".jpg"
+        if "png" in content_type:
+            suffix = ".png"
+        elif "webp" in content_type:
+            suffix = ".webp"
+        elif "jpeg" in content_type or "jpg" in content_type:
+            suffix = ".jpg"
+        path = upload_dir / f"main_{index}{suffix}"
+        path.write_bytes(await response.body())
+        paths.append(str(path))
+
+    await page.locator('input[type="file"]').first.set_input_files(paths)
+    await page.wait_for_timeout(3500)
+    return {"field": "发布前商品主图", "status": "uploaded", "count": len(paths)}
+
+
+async def select_category_on_prefill_page(page: Page, category_path: str) -> dict[str, Any]:
+    leaf = leaf_category(category_path)
+    short_leaf = leaf.replace("明装", "").replace("暗装", "")
+    for value in (category_path, leaf, short_leaf):
+        if value and await click_visible_text_contains(page, value):
+            return {"field": "发布前商品分类", "status": "selected", "value": value}
+    return {"field": "发布前商品分类", "status": "failed", "message": f"找不到推荐分类: {category_path}"}
+
+
+async def complete_category_prefill_page(page: Page, payload: dict[str, Any], state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    state = state or await category_prefill_state(page)
+    results.append({"field": "发布前信息页", "status": "detected", "image_count": state.get("image_count"), "title": state.get("title")})
+
+    image_count = int(state.get("image_count") or 0)
+    if image_count <= 0:
+        upload_result = await upload_category_prefill_main_images(page, main_image_urls_from_payload(payload))
+        results.append(upload_result)
+        state = await category_prefill_state(page)
+        image_count = int(state.get("image_count") or 0)
+    else:
+        results.append({"field": "发布前商品主图", "status": "already_ok", "count": image_count})
+
+    title = str(payload.get("title") or "").strip()
+    if title and str(state.get("title") or "").strip() != title:
+        results.append(await fill_category_prefill_title(page, title))
+    else:
+        results.append({"field": "发布前商品标题", "status": "already_ok", "value": state.get("title") or title})
+
+    category_path = str(payload.get("category") or "").strip()
+    if category_path:
+        results.append(await select_category_on_prefill_page(page, category_path))
+
+    if await click_visible_text_contains(page, "下一步"):
+        try:
+            await page.wait_for_url("**/goods/goods_add/**", timeout=30000)
+            await page.wait_for_timeout(1200)
+            results.append({"field": "发布前下一步", "status": "clicked", "url": page.url})
+        except Exception:
+            results.append({"field": "发布前下一步", "status": "clicked_wait_timeout", "url": page.url})
+    else:
+        results.append({"field": "发布前下一步", "status": "failed", "message": "找不到下一步按钮"})
+    return results
+
+
 async def ensure_category_page_selected(page: Page, payload: dict[str, Any]) -> list[dict[str, Any]]:
     if "/goods/goods_add/" in page.url:
         return [{"field": "商品分类", "status": "already_on_edit_page", "url": page.url}]
@@ -470,6 +631,9 @@ async def ensure_category_page_selected(page: Page, payload: dict[str, Any]) -> 
     body_text = await page.locator("body").inner_text(timeout=5000)
     if "请向右滑块完成拼图" in body_text or ("滑块" in body_text and "拼图" in body_text):
         return [{"field": "商品分类", "status": "captcha_required", "message": "拼多多出现滑块验证，请先在浏览器里手动完成验证，然后再点第三步继续填充"}]
+    prefill_state = await category_prefill_state(page)
+    if prefill_state.get("is_preflight"):
+        return await complete_category_prefill_page(page, payload, prefill_state)
     if "选择分类" not in body_text:
         return [{"field": "商品分类", "status": "skipped", "message": "当前不是选择分类页"}]
 
@@ -846,6 +1010,8 @@ async def fill_specs(page: Page, payload: dict[str, Any]) -> list[dict[str, Any]
                 {
                     "category": package.get("category_path") or "基础建材 > 家用五金 > 拉手 > 明装小拉手",
                     "category_keyword": package.get("category_keyword") or "小拉手",
+                    "title": package.get("title") or "",
+                    "main_images": package.get("main_images") or [],
                 },
             )
         )

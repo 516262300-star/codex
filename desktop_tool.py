@@ -608,6 +608,7 @@ async def upload_plan_payload(
         "product_folder": dry["product_folder"],
         "material_path": material_path,
         "erp_model": package_erp_model,
+        "title": title_template,
         "category_path": (dry.get("listing_template") or {}).get("matched_category_path") or dry["meta"]["category_path"],
         "category_keyword": "小拉手",
         "price_multiplier": dry["meta"]["price_multiplier"],
@@ -899,6 +900,7 @@ async def fill_basic_info_payload(product_folder: str, price_multiplier: str | N
         "attributes": listing.get("attributes") or {},
         "category": listing_template.get("matched_category_path") or meta.category_path,
         "category_keyword": "小拉手",
+        "main_images": package.get("main_images") or [],
     }
     results = send_session_command("fill_basic_info", payload, timeout_s=180)
     return {
