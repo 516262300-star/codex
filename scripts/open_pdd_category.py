@@ -555,8 +555,52 @@ async def upload_category_prefill_main_images(page: Page, urls: list[str]) -> di
     if not urls:
         return {"field": "发布前商品主图", "status": "skipped", "message": "没有主图链接"}
 
-    input_count = await page.locator('input[type="file"]').count()
-    if input_count < 1:
+    input_index = await page.evaluate(
+        """
+        () => {
+          const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+          const imageInputs = inputs.filter(input => {
+            const accept = (input.getAttribute('accept') || '').toLowerCase();
+            return !accept || accept.includes('image') || accept.includes('jpg') || accept.includes('jpeg') || accept.includes('png') || accept.includes('webp');
+          });
+          if (!imageInputs.length) return -1;
+          const visibleBox = (el) => {
+            let current = el;
+            for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+              const rect = current.getBoundingClientRect();
+              if (rect.width > 20 && rect.height > 20) return rect;
+            }
+            return el.getBoundingClientRect();
+          };
+          const scoreInput = (input, fallbackIndex) => {
+            let score = fallbackIndex;
+            let text = '';
+            let current = input;
+            for (let depth = 0; current && depth < 10; depth += 1, current = current.parentElement) {
+              text += ' ' + (current.innerText || current.textContent || '');
+              if (current.id === 'goodsCarousel' || current.id === 'goodsCarouselId') score -= 5000;
+              if (current.id === 'picture' || current.id === 'basic.carousel_gallery') score -= 1500;
+            }
+            if (text.includes('商品主图')) score -= 3000;
+            if (text.includes('上传图片')) score -= 1500;
+            if (text.includes('轮播图')) score -= 1000;
+            if (text.includes('商品视频')) score += 4000;
+            if (text.includes('商品讲解视频')) score += 4000;
+            if (text.includes('详情图') || text.includes('商品详情')) score += 3000;
+            if (text.includes('规格图') || text.includes('SKU')) score += 3000;
+            const rect = visibleBox(input);
+            score += Math.max(0, rect.top);
+            score += Math.max(0, rect.left) / 1000;
+            return score;
+          };
+          const best = imageInputs
+            .map((input, index) => ({ input, score: scoreInput(input, index) }))
+            .sort((a, b) => a.score - b.score)[0].input;
+          return inputs.indexOf(best);
+        }
+        """
+    )
+    if input_index < 0:
         return {"field": "发布前商品主图", "status": "failed", "message": "找不到图片上传 input"}
 
     upload_dir = ROOT / ".tmp_tool" / "category_preflight_uploads"
@@ -578,7 +622,7 @@ async def upload_category_prefill_main_images(page: Page, urls: list[str]) -> di
         path.write_bytes(await response.body())
         paths.append(str(path))
 
-    await page.locator('input[type="file"]').first.set_input_files(paths)
+    await page.locator('input[type="file"]').nth(input_index).set_input_files(paths)
     await page.wait_for_timeout(3500)
     return {"field": "发布前商品主图", "status": "uploaded", "count": len(paths)}
 

@@ -117,24 +117,66 @@
 
     var bodyText = document.body && (document.body.innerText || document.body.textContent || '');
     if (bodyText && bodyText.includes('商品主图')) {
-      var scored = imageInputs.map(function (input, index) {
-        var rect = visibleBox(input);
-        var ancestor = input;
-        var text = '';
-        for (var depth = 0; ancestor && depth < 7; depth++, ancestor = ancestor.parentElement) {
-          text += ' ' + (ancestor.innerText || ancestor.textContent || '');
-        }
-        var score = index;
-        if (text.includes('商品主图') || text.includes('上传图片') || text.includes('轮播图')) score -= 1000;
-        score += Math.max(0, rect.top);
-        return { input: input, score: score };
-      }).sort(function (a, b) {
-        return a.score - b.score;
-      });
-      return scored[0].input;
+      return findPrefillMainImageFileInput() || imageInputs[0] || null;
     }
 
     return imageInputs[0] || null;
+  }
+
+  function findPrefillMainImageFileInput() {
+    var inputs = Array.prototype.slice.call(document.querySelectorAll('input[type="file"]'));
+    var imageInputs = inputs.filter(function (input) {
+      var accept = (input.getAttribute('accept') || '').toLowerCase();
+      return !accept || accept.includes('image') || accept.includes('jpg') || accept.includes('jpeg') || accept.includes('png') || accept.includes('webp');
+    });
+    if (imageInputs.length === 0) return null;
+
+    function visibleBox(el) {
+      var current = el;
+      for (var depth = 0; current && depth < 8; depth++, current = current.parentElement) {
+        var rect = current.getBoundingClientRect();
+        if (rect.width > 20 && rect.height > 20) return rect;
+      }
+      return el.getBoundingClientRect();
+    }
+
+    function scoreInput(input, index) {
+      var score = index;
+      var text = '';
+      var current = input;
+      for (var depth = 0; current && depth < 10; depth++, current = current.parentElement) {
+        text += ' ' + (current.innerText || current.textContent || '');
+        if (current.id === 'goodsCarousel' || current.id === 'goodsCarouselId') score -= 5000;
+        if (current.id === 'picture' || current.id === 'basic.carousel_gallery') score -= 1500;
+      }
+      if (text.includes('商品主图')) score -= 3000;
+      if (text.includes('上传图片')) score -= 1500;
+      if (text.includes('轮播图')) score -= 1000;
+      if (text.includes('商品视频')) score += 4000;
+      if (text.includes('商品讲解视频')) score += 4000;
+      if (text.includes('详情图') || text.includes('商品详情')) score += 3000;
+      if (text.includes('规格图') || text.includes('SKU')) score += 3000;
+
+      var rect = visibleBox(input);
+      score += Math.max(0, rect.top);
+      score += Math.max(0, rect.left) / 1000;
+      return score;
+    }
+
+    return imageInputs.map(function (input, index) {
+      return { input: input, score: scoreInput(input, index) };
+    }).sort(function (a, b) {
+      return a.score - b.score;
+    })[0].input;
+  }
+
+  function findPrefillMainImageArea() {
+    return document.querySelector('#goodsCarousel') ||
+           document.querySelector('#goodsCarouselId') ||
+           document.querySelector('#picture') ||
+           document.querySelector('#basic\\.carousel_gallery') ||
+           document.querySelector('[data-tracking-viewid="el_upload_wheel_chart"]') ||
+           document.body;
   }
 
   function findDetailImageFileInput() {
@@ -532,11 +574,11 @@
     if (Toast) Toast.show('开始上传 ' + imageItems.length + ' 张图片...', 'info', 3000);
     console.log('[PDD填充插件] 开始上传图片，数量:', imageItems.length);
 
-    var fileInput = findImageFileInput();
+    var fileInput = options.fileInputFinder ? options.fileInputFinder() : findImageFileInput();
     if (!fileInput) {
       if (Toast) Toast.show('未找到图片上传入口', 'error');
       console.error('[PDD填充插件] 未找到 file input 元素');
-      return Promise.resolve();
+      return Promise.resolve(false);
     }
     console.log('[PDD填充插件] 找到 file input:', fileInput, 'accept:', fileInput.accept);
 
@@ -548,7 +590,7 @@
       if (index >= imageItems.length) {
         if (files.length === 0) {
           if (Toast) Toast.show('没有符合要求的图片可上传', 'error');
-          return Promise.resolve();
+          return Promise.resolve(false);
         }
 
         var dataTransfer = new DataTransfer();
@@ -563,7 +605,7 @@
         console.log('[PDD填充插件] 已触发图片上传, 等待平台处理完成...');
         if (Toast) Toast.show('图片上传中，等待平台处理...', 'info', 10000);
 
-        return waitForImageUploadComplete(files.length, delay, Toast).then(function (uploadOk) {
+        return waitForImageUploadComplete(files.length, delay, Toast, options.areaFinder).then(function (uploadOk) {
           var detail = skippedCount > 0
             ? '合规上传: ' + files.length + ' 张, 跳过不合规: ' + skippedCount + ' 张'
             : '成功上传: ' + files.length + '/' + imageItems.length + ' 张';
@@ -577,6 +619,7 @@
 
           console.log('[PDD填充插件] PDD图片上传完成, 全部成功:', uploadOk);
           console.log('[PDD填充插件] ' + detail);
+          return uploadOk;
         });
       }
 
@@ -831,6 +874,8 @@
     cleanImageUrl: cleanImageUrl,
     checkImageDimensions: checkImageDimensions,
     findImageFileInput: findImageFileInput,
+    findPrefillMainImageFileInput: findPrefillMainImageFileInput,
+    findPrefillMainImageArea: findPrefillMainImageArea,
     findDetailImageFileInput: findDetailImageFileInput,
     findFileInputNearText: findFileInputNearText,
     uploadVideo: uploadVideo,

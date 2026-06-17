@@ -271,11 +271,17 @@
     return Promise.resolve(true);
   }
 
-  function uploadImages(imageItems) {
-    return ImageHandler.uploadImages(imageItems, {
+  function uploadImages(imageItems, options) {
+    var opts = {
       Toast: Toast,
       delay: Utils.delay
-    });
+    };
+    if (options) {
+      for (var key in options) {
+        if (options.hasOwnProperty(key)) opts[key] = options[key];
+      }
+    }
+    return ImageHandler.uploadImages(imageItems, opts);
   }
 
   function uploadDetailImages(imageDataArray) {
@@ -311,6 +317,90 @@
     return SkuHandler.fillSkuSection(data, skuOpts);
   }
 
+  function collectMainImageItems(productData) {
+    var items = [];
+    var seen = {};
+
+    function add(url, meta) {
+      url = String(url || '').trim();
+      if (!url || seen[url]) return;
+      seen[url] = true;
+      var item = { url: url };
+      if (meta && meta.size) item.size = meta.size;
+      if (meta && meta.name) item.name = meta.name;
+      items.push(item);
+    }
+
+    function addFromObject(obj) {
+      if (!obj || Array.isArray(obj)) return;
+      for (var key in obj) {
+        if (obj.hasOwnProperty(key)) add(obj[key]);
+      }
+    }
+
+    function addFromArray(arr) {
+      if (!Array.isArray(arr)) return;
+      arr.forEach(function (item) {
+        if (typeof item === 'string') {
+          add(item);
+        } else if (item && typeof item === 'object') {
+          add(item.url, {
+            size: item.size || ((item.width && item.height) ? (item.width + 'x' + item.height) : ''),
+            name: item.name || item.filename || ''
+          });
+        }
+      });
+    }
+
+    addFromObject(productData.carouselImages);
+    addFromArray(productData.carouselImages);
+    addFromObject(productData.mainImages);
+    addFromArray(productData.main_images);
+    addFromArray(productData.mainImages);
+    return items;
+  }
+
+  function uploadPrefillMainImages(productData) {
+    var items = collectMainImageItems(productData);
+    if (!items.length) {
+      Logger.warn('发布前信息页没有可用主图数据');
+      return Promise.resolve(false);
+    }
+    Logger.info('发布前信息页补上传主图，数量:', items.length);
+    return uploadImages(items, {
+      fileInputFinder: ImageHandler.findPrefillMainImageFileInput,
+      areaFinder: ImageHandler.findPrefillMainImageArea
+    }).then(function (ok) {
+      return Utils.delay(2500).then(function () { return !!ok; });
+    });
+  }
+
+  function ensurePrefillRequiredFields(productData) {
+    var state = CategoryHandler.getPrefillPageState();
+    if (!state.isPrefill) return Promise.resolve(true);
+    var chain = Promise.resolve();
+
+    if (state.imageCount < 1) {
+      reportWorkbenchProgress('category_prefill_upload_images', '发布前信息页：正在补上传商品主图');
+      chain = chain.then(function () {
+        return uploadPrefillMainImages(productData);
+      });
+    }
+
+    chain = chain.then(function () {
+      var latest = CategoryHandler.getPrefillPageState();
+      if (productData.title && latest.title !== productData.title) {
+        reportWorkbenchProgress('category_prefill_fill_title', '发布前信息页：正在补填写商品标题');
+        return CategoryHandler.fillTitleOnCategoryPage(productData.title);
+      }
+      return true;
+    });
+
+    return chain.then(function () {
+      return CategoryHandler.waitForPrefillRequiredFields(productData.title || '', 1);
+    });
+  }
+
   // ====== 类目页完整填充流程 ======
 
   function handleCategoryFill(productData, fissionConfig) {
@@ -341,20 +431,15 @@
 
       // Step 1: 上传轮播图（在v3上可触发AI分类）
       chain = chain.then(function () {
-        if (productData.carouselImages) {
+        var items = collectMainImageItems(productData);
+        if (items.length > 0) {
           Logger.info('v3/v4 Step 1: 上传轮播图');
-          var items = [];
-          var imgs = productData.carouselImages;
-          for (var k in imgs) {
-            if (imgs.hasOwnProperty(k) && imgs[k]) {
-              items.push({ url: imgs[k] });
-            }
-          }
-          if (items.length > 0) {
-            return uploadImages(items).then(function () {
-              return Utils.delay(3000); // 等待图片上传和AI识别
-            });
-          }
+          return uploadImages(items, {
+            fileInputFinder: ImageHandler.findPrefillMainImageFileInput,
+            areaFinder: ImageHandler.findPrefillMainImageArea
+          }).then(function () {
+            return Utils.delay(3000); // 等待图片上传和AI识别
+          });
         }
         return Promise.resolve();
       });
@@ -377,7 +462,7 @@
       chain = chain.then(function () {
         Logger.info('v3/v4 Step 3: 校验主图和标题已填');
         reportWorkbenchProgress('category_prefill_check', '类目页：正在确认主图和标题已填写');
-        return CategoryHandler.waitForPrefillRequiredFields(productData.title || '', 1).then(function (ready) {
+        return ensurePrefillRequiredFields(productData).then(function (ready) {
           if (!ready) {
             throw new Error('发布前信息页主图或标题未填写完成');
           }
