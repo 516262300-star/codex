@@ -18,7 +18,7 @@ if (Test-Workbench) {
     exit 0
 }
 
-$Command = "cd /d `"$Root`" && python desktop_tool.py"
+$Command = "cd /d `"$Root`" && python desktop_tool.py --no-open"
 Start-Process -FilePath "cmd.exe" -ArgumentList @("/k", $Command) -WorkingDirectory $Root
 
 for ($i = 0; $i -lt 30; $i++) {
