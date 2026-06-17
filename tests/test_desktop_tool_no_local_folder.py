@@ -39,6 +39,13 @@ def test_parse_material_sku_lookup_maps_bright_gold_to_rose_gold():
     assert color == "玫瑰金"
 
 
+def test_parse_material_sku_lookup_maps_pvd_gold_to_chrome_pvd():
+    lookup_name, color = desktop_tool.parse_material_sku_lookup("8118-PVD金-单孔")
+
+    assert lookup_name == "8118"
+    assert color == "铬PVD"
+
+
 def test_material_sku_sort_key_orders_sizes_numerically():
     images = [
         {"filename": "6787-亮镍-128尺寸图.jpg"},

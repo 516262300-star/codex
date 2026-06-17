@@ -414,6 +414,7 @@ PRICE_BOOK_COLOR_WORDS = (
     "铜本色",
     "玫瑰金",
     "铜拉丝",
+    "铬PVD",
     "亮金",
     "钛银",
     "亮镍",
@@ -428,6 +429,9 @@ PRICE_BOOK_COLOR_WORDS = (
 PRICE_BOOK_COLOR_ALIASES = {
     "钛银": "亮镍",
     "亮金": "玫瑰金",
+    "PVD金": "铬PVD",
+    "pvd金": "铬PVD",
+    "铬pvd": "铬PVD",
     "铬色": "铬",
 }
 
