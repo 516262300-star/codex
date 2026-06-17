@@ -40,6 +40,8 @@ MATERIAL_RESPONSE_PATH = ROOT / ".tmp_tool" / "plugin_material_response.json"
 TITLE_CACHE_PATH = ROOT / ".tmp_tool" / "title_candidates.json"
 PLUGIN_STATUS_LOCK = threading.Lock()
 MATERIAL_OPTIONS = ("黄铜", "锌合金", "铝合金")
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+VIDEO_EXTENSIONS = {"mp4", "mov", "webm", "m4v"}
 
 TITLE_CANDIDATE_PATTERNS = [
     "法式复古柜门拉手中古风抽屉衣柜橱柜现代简约轻奢柜子单孔小把手",
@@ -401,6 +403,21 @@ def material_file_sku_name(file: dict[str, Any]) -> str:
     return Path(str(file.get("filename") or "")).stem.strip()
 
 
+def material_file_extension(file: dict[str, Any]) -> str:
+    extension = str(file.get("extension") or "").strip().lower()
+    if extension:
+        return extension.lstrip(".")
+    return Path(str(file.get("filename") or "")).suffix.lower().lstrip(".")
+
+
+def is_material_image(file: dict[str, Any]) -> bool:
+    return material_file_extension(file) in IMAGE_EXTENSIONS
+
+
+def is_material_video(file: dict[str, Any]) -> bool:
+    return material_file_extension(file) in VIDEO_EXTENSIONS
+
+
 def material_sku_sort_key(file: dict[str, Any]) -> tuple[Any, ...]:
     filename = str(file.get("filename") or "")
     sku_name = material_file_sku_name(file)
@@ -591,12 +608,14 @@ async def upload_plan_payload(
     material_detail = find_child_files(material, "详情页")
     material_sku = find_child_files(material, "尺寸图")
 
-    main_images = sorted(material_main, key=lambda item: natural_key(str(item.get("filename") or "")))
-    detail_images = sorted(material_detail, key=lambda item: natural_key(str(item.get("filename") or "")))
-    if not material_sku:
+    main_images = sorted([item for item in material_main if is_material_image(item)], key=lambda item: natural_key(str(item.get("filename") or "")))
+    main_videos = sorted([item for item in material_main if is_material_video(item)], key=lambda item: natural_key(str(item.get("filename") or "")))
+    detail_images = sorted([item for item in material_detail if is_material_image(item)], key=lambda item: natural_key(str(item.get("filename") or "")))
+    material_sku_images = [item for item in material_sku if is_material_image(item)]
+    if not material_sku_images:
         raise FileNotFoundError("图片空间“尺寸图”文件夹里没有图片，无法生成 SKU")
     sku_rows = await material_sku_rows_from_image_space(
-        material_sku,
+        material_sku_images,
         meta,
         price_multiplier=price_multiplier,
         price_cent_ending=price_cent_ending,
@@ -633,6 +652,15 @@ async def upload_plan_payload(
             }
             for index, image in enumerate(main_images, start=1)
         ],
+        "main_videos": [
+            {
+                "index": index,
+                "filename": str(video.get("filename") or ""),
+                "url": str(video.get("url") or ""),
+                "size": video.get("size"),
+            }
+            for index, video in enumerate(main_videos, start=1)
+        ],
         "detail_images": [
             {
                 "index": index,
@@ -646,6 +674,7 @@ async def upload_plan_payload(
         "sku_specs": sku_specs,
         "checks": {
             "main_image_count": len(main_images),
+            "main_video_count": len(main_videos),
             "detail_image_count": len(detail_images),
             "sku_count": len(sku_specs),
             "spec_type": "型号",
@@ -1093,6 +1122,13 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         for item in package.get("detail_images") or []
         if item.get("url")
     ]
+    main_video_urls = [
+        str(item.get("url") or "")
+        for item in package.get("main_videos") or []
+        if item.get("url")
+    ]
+    product_video = main_video_urls[0] if main_video_urls else ""
+    explain_video = main_video_urls[1] if len(main_video_urls) > 1 else product_video
     sku_specs = list(package.get("sku_specs") or [])
     skus = [
         {
@@ -1114,6 +1150,8 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         "cat4Name": category_parts[3],
         "carouselImages": main_images,
         "detailImages": detail_images,
+        "productVideo": product_video,
+        "explainVideo": explain_video,
         "attributes": listing_attributes_array(dict(listing.get("attributes") or {})),
         "skuAxes": [
             {

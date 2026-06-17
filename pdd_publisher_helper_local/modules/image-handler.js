@@ -162,6 +162,100 @@
     return null;
   }
 
+  function findFileInputNearText(labels, mediaType) {
+    labels = Array.isArray(labels) ? labels : [labels];
+    mediaType = mediaType || '';
+    var inputs = Array.prototype.slice.call(document.querySelectorAll('input[type="file"]'));
+    var candidates = inputs.filter(function (input) {
+      var accept = (input.getAttribute('accept') || '').toLowerCase();
+      if (mediaType === 'video') {
+        return !accept || accept.includes('video') || accept.includes('mp4') || accept.includes('mov') || accept.includes('webm');
+      }
+      return !accept || accept.includes('image') || accept.includes('jpg') || accept.includes('jpeg') || accept.includes('png');
+    });
+    if (candidates.length === 0) return null;
+
+    function labelScore(input, index) {
+      var text = '';
+      var current = input;
+      for (var depth = 0; current && depth < 9; depth++, current = current.parentElement) {
+        text += ' ' + (current.innerText || current.textContent || '');
+      }
+      var score = index;
+      for (var li = 0; li < labels.length; li++) {
+        if (text.includes(labels[li])) score -= 1000 + labels[li].length;
+      }
+      var rect = input.getBoundingClientRect();
+      score += Math.max(0, rect.top);
+      return score;
+    }
+
+    return candidates.map(function (input, index) {
+      return { input: input, score: labelScore(input, index) };
+    }).sort(function (a, b) {
+      return a.score - b.score;
+    })[0].input;
+  }
+
+  function videoExtensionFrom(url, mimeType) {
+    var path = '';
+    try {
+      path = new URL(url).pathname;
+    } catch (e) {
+      path = String(url || '');
+    }
+    var match = path.match(/\.([a-z0-9]+)$/i);
+    if (match) return match[1].toLowerCase();
+    if ((mimeType || '').includes('webm')) return 'webm';
+    if ((mimeType || '').includes('quicktime')) return 'mov';
+    return 'mp4';
+  }
+
+  function uploadVideo(videoItem, labels, options) {
+    options = options || {};
+    var Toast = options.Toast;
+    var delay = options.delay || function (ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    };
+    var labelText = Array.isArray(labels) ? labels[0] : String(labels || '视频');
+    var rawUrl = typeof videoItem === 'string' ? videoItem : videoItem && videoItem.url;
+    if (!rawUrl) {
+      if (Toast) Toast.show(labelText + '视频数据为空，跳过上传', 'warning', 3000);
+      return Promise.resolve(false);
+    }
+
+    var fileInput = findFileInputNearText(labels, 'video');
+    if (!fileInput) {
+      if (Toast) Toast.show('未找到' + labelText + '上传入口', 'warning', 4000);
+      console.warn('[PDD填充插件] 未找到' + labelText + ' file input');
+      return Promise.resolve(false);
+    }
+
+    var url = cleanImageUrl(rawUrl);
+    if (Toast) Toast.show('正在获取' + labelText + '...', 'info', 3000);
+    return fetchImageDirect(url).then(function (result) {
+      if (!result) {
+        if (Toast) Toast.show(labelText + '获取失败', 'warning', 4000);
+        console.warn('[PDD填充插件] ' + labelText + '获取失败: ' + url);
+        return false;
+      }
+
+      var mimeType = result.mimeType || 'video/mp4';
+      if (!mimeType.includes('video')) mimeType = 'video/mp4';
+      var ext = videoExtensionFrom(url, mimeType);
+      var fileName = (typeof videoItem === 'object' && videoItem.name) || (labelText.replace(/\s+/g, '') + '.' + ext);
+      var file = new File([result.blob], fileName, { type: mimeType });
+      var dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      fileInput.files = dataTransfer.files;
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+      console.log('[PDD填充插件] 已触发' + labelText + '上传: ' + fileName + ', ' + (file.size / 1024 / 1024).toFixed(2) + 'MB');
+      if (Toast) Toast.show(labelText + '上传中...', 'info', 6000);
+      return delay(5000).then(function () { return true; });
+    });
+  }
+
   function findSkuImageFileInput() {
     var container = document.querySelector('.batch-set.batch-sku-thumb') || document.querySelector('[class*="batch-sku-thumb"]');
     if (container) {
@@ -738,6 +832,8 @@
     checkImageDimensions: checkImageDimensions,
     findImageFileInput: findImageFileInput,
     findDetailImageFileInput: findDetailImageFileInput,
+    findFileInputNearText: findFileInputNearText,
+    uploadVideo: uploadVideo,
     findSkuImageFileInput: findSkuImageFileInput,
     uploadImages: uploadImages,
     uploadDetailImages: uploadDetailImages,

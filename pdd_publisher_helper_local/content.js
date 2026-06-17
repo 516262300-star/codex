@@ -285,6 +285,13 @@
     });
   }
 
+  function uploadVideo(videoItem, labels) {
+    return ImageHandler.uploadVideo(videoItem, labels, {
+      Toast: Toast,
+      delay: Utils.delay
+    });
+  }
+
   function uploadSkuImages(imageDataArray) {
     return ImageHandler.uploadSkuImages(imageDataArray, {
       Toast: Toast,
@@ -616,6 +623,32 @@
         }
       }
       return Promise.resolve();
+    });
+
+    // Step 3: Fill the common listing attributes from the local workbench.
+    steps.push(function () {
+      var videoTasks = [];
+      if (productData.productVideo) {
+        videoTasks.push(function () {
+          reportWorkbenchProgress('detail_product_video', '详情页：正在上传商品视频');
+          return uploadVideo(productData.productVideo, ['商品视频']).then(function (ok) {
+            stepResults.productVideo = !!ok;
+            reportWorkbenchProgress(ok ? 'detail_product_video_done' : 'detail_product_video_skipped', ok ? '详情页：商品视频已上传' : '详情页：商品视频未上传，请检查入口');
+          });
+        });
+      }
+      if (productData.explainVideo) {
+        videoTasks.push(function () {
+          reportWorkbenchProgress('detail_explain_video', '详情页：正在上传商品讲解视频');
+          return uploadVideo(productData.explainVideo, ['商品讲解视频', '讲解视频']).then(function (ok) {
+            stepResults.explainVideo = !!ok;
+            reportWorkbenchProgress(ok ? 'detail_explain_video_done' : 'detail_explain_video_skipped', ok ? '详情页：商品讲解视频已上传' : '详情页：商品讲解视频未上传，请检查入口');
+          });
+        });
+      }
+      return videoTasks.reduce(function (chain, task) {
+        return chain.then(task).then(function () { return Utils.delay(800); });
+      }, Promise.resolve());
     });
 
     // Step 3: Fill the common listing attributes from the local workbench.

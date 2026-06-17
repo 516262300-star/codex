@@ -94,6 +94,7 @@ def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
             "stock_per_sku": 500,
         },
         "main_images": [{"index": 1, "url": "https://example.test/main.jpg"}],
+        "main_videos": [{"index": 1, "url": "https://example.test/main.mp4"}],
         "detail_images": [{"index": 1, "url": "https://example.test/detail.jpg"}],
         "sku_specs": [
             {
@@ -114,6 +115,8 @@ def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
 
     assert data["carouselImages"] == {"image1": "https://example.test/main.jpg"}
     assert data["detailImages"] == ["https://example.test/detail.jpg"]
+    assert data["productVideo"] == "https://example.test/main.mp4"
+    assert data["explainVideo"] == "https://example.test/main.mp4"
     assert data["skus"][0]["productCode"] == "8105#古铜色"
     assert data["marketPrice"] == Decimal("19.00")
     assert data["batchDiscount"] == "9.9"

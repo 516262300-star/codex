@@ -19,6 +19,9 @@ COMMAND_STATUS_PATH = ROOT / ".tmp_tool" / "pdd_category_command_status.json"
 PDD_PROFILE_DIR = ROOT / ".pdd_browser_profile"
 MATERIAL_URL = "https://mms.pinduoduo.com/material/upload"
 DIR_LIST_URL = "https://mms.pinduoduo.com/garner/mms/file/dir_list"
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+VIDEO_EXTENSIONS = {"mp4", "mov", "webm", "m4v"}
+MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 ATTRIBUTE_ALIASES = {
@@ -154,12 +157,12 @@ async def read_material_payload(page: Page, material_path: str) -> dict[str, Any
     children: dict[str, Any] = {}
     for child in child_folders:
         _, child_files = await list_material_dir(page, child.id, page_size=200)
-        image_files = [
+        media_files = [
             file
             for file in child_files
-            if str(file.get("extension") or "").lower() in {"jpg", "jpeg", "png", "webp"}
+            if str(file.get("extension") or "").lower() in MEDIA_EXTENSIONS
         ]
-        children[child.name] = sorted(image_files, key=lambda f: natural_key(str(f.get("filename") or "")))
+        children[child.name] = sorted(media_files, key=lambda f: natural_key(str(f.get("filename") or "")))
 
     return {
         "path": material_path,
