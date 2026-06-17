@@ -11,39 +11,46 @@ def test_parse_material_sku_lookup_extracts_size_from_descriptive_filename():
     assert color == "古铜色"
 
 
-def test_parse_material_sku_lookup_ignores_single_hole_suffix():
+def test_parse_material_sku_lookup_keeps_single_hole_suffix():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("2715云栖-铬色-单孔")
 
-    assert lookup_name == "2715"
+    assert lookup_name == "2715-单孔"
     assert color == "铬"
 
 
 def test_parse_material_sku_lookup_ignores_parenthesized_single_hole_size():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("2075-哑镍拉丝-单孔（33）")
 
-    assert lookup_name == "2075"
+    assert lookup_name == "2075-单孔"
     assert color == "哑镍拉丝"
 
 
 def test_parse_material_sku_lookup_maps_titanium_silver_to_bright_nickel():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("2715云栖-钛银-单孔")
 
-    assert lookup_name == "2715"
+    assert lookup_name == "2715-单孔"
     assert color == "亮镍"
 
 
 def test_parse_material_sku_lookup_maps_bright_gold_to_rose_gold():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("2715云栖-亮金-单孔")
 
-    assert lookup_name == "2715"
+    assert lookup_name == "2715-单孔"
     assert color == "玫瑰金"
 
 
 def test_parse_material_sku_lookup_maps_pvd_gold_to_chrome_pvd():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("8118-PVD金-单孔")
 
-    assert lookup_name == "8118"
+    assert lookup_name == "8118-单孔"
     assert color == "铬PVD"
+
+
+def test_parse_material_sku_lookup_uses_install_suffix_when_base_model_missing():
+    lookup_name, color = desktop_tool.parse_material_sku_lookup("8256-金-单孔")
+
+    assert lookup_name == "8256-单孔"
+    assert color == "金"
 
 
 def test_material_sku_sort_key_orders_sizes_numerically():

@@ -453,6 +453,7 @@ def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
     known_color = extract_price_book_color(stem)
     if len(parts) >= 2:
         base_match = re.match(r"^(\d+[A-Za-z]*)(.*)$", parts[0])
+        install_match = re.search(r"单孔|吊坠", stem)
         size_index = -1
         size_value = ""
         for index, part in enumerate(parts[1:], start=1):
@@ -475,6 +476,10 @@ def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
             return f"{base_match.group(1)}-{size_value}", color
         if base_match:
             non_model_text = "-".join([base_match.group(2).strip(), *parts[1:]]).strip("-")
+            if install_match:
+                install = install_match.group(0)
+                color_text = re.sub(r"(单孔|吊坠|直径|尺寸图|尺寸|[（(]\d+(?:尺寸图|尺寸|直径|mm|MM)?[）)])", "", non_model_text).strip("-") or None
+                return f"{base_match.group(1)}-{install}", known_color or color_text
             if known_color:
                 return base_match.group(1), known_color
             if non_model_text and re.search(r"单孔|吊坠|直径", non_model_text):
@@ -486,6 +491,8 @@ def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
         if re.fullmatch(r"\d+|\d+直径", tail):
             return f"{parts[0]}-{tail}", "-".join(parts[1:-1])
         if re.fullmatch(r"单孔|吊坠|直径", tail):
+            if tail in {"单孔", "吊坠"}:
+                return f"{parts[0]}-{tail}", known_color or "-".join(parts[1:-1])
             return parts[0], known_color or "-".join(parts[1:-1])
     return stem, None
 
