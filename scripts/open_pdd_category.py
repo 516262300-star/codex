@@ -609,6 +609,7 @@ async def complete_category_prefill_page(page: Page, payload: dict[str, Any], st
     title = str(payload.get("title") or "").strip()
     if title and str(state.get("title") or "").strip() != title:
         results.append(await fill_category_prefill_title(page, title))
+        state = await category_prefill_state(page)
     else:
         results.append({"field": "发布前商品标题", "status": "already_ok", "value": state.get("title") or title})
 
@@ -617,6 +618,16 @@ async def complete_category_prefill_page(page: Page, payload: dict[str, Any], st
         results.append(await select_category_on_prefill_page(page, category_path))
     elif category_path:
         results.append({"field": "发布前商品分类", "status": "skipped", "message": "当前发布前信息页没有商品分类区域"})
+
+    final_state = await category_prefill_state(page)
+    missing = []
+    if int(final_state.get("image_count") or 0) <= 0:
+        missing.append("商品主图")
+    if not str(final_state.get("title") or "").strip():
+        missing.append("商品标题")
+    if missing:
+        results.append({"field": "发布前必填项", "status": "failed", "message": "、".join(missing) + "未填写完成，暂不点击下一步"})
+        return results
 
     if await click_visible_text_contains(page, "下一步"):
         try:

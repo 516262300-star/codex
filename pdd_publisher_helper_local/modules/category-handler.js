@@ -997,6 +997,49 @@
     });
   }
 
+  function getPrefillPageState() {
+    var body = document.body && (document.body.innerText || document.body.textContent || '');
+    var titleInput = document.querySelector('#goodsNameId input[type="text"]') ||
+                     document.querySelector('#goods_name input[type="text"]') ||
+                     document.querySelector('input[placeholder*="商品标题"]') ||
+                     document.querySelector('input[placeholder*="商品描述"]');
+    var uploadMatch = body && body.match(/上传图片\s*\((\d+)\s*\/\s*\d+\)/);
+    var imageCount = uploadMatch ? Number(uploadMatch[1]) : 0;
+    if (!imageCount) {
+      var carousel = document.querySelector('#goodsCarousel') ||
+                     document.querySelector('#goodsCarouselId') ||
+                     document.body;
+      var imgs = carousel ? carousel.querySelectorAll('img, div[style*="background-image"]') : [];
+      for (var i = 0; i < imgs.length; i++) {
+        var rect = imgs[i].getBoundingClientRect();
+        if (rect.width >= 24 && rect.height >= 24) imageCount++;
+      }
+    }
+    return {
+      isPrefill: !!(body && body.includes('商品主图') && body.includes('商品标题') &&
+        (body.includes('下一步') || body.includes('完善商品信息'))),
+      imageCount: imageCount,
+      title: titleInput ? (titleInput.value || '').trim() : ''
+    };
+  }
+
+  function waitForPrefillRequiredFields(expectedTitle, minImages) {
+    minImages = minImages || 1;
+    return waitForCondition(function () {
+      var state = getPrefillPageState();
+      var hasImages = state.imageCount >= minImages;
+      var hasTitle = !!state.title;
+      if (expectedTitle) hasTitle = state.title === expectedTitle || state.title.indexOf(expectedTitle) >= 0;
+      return hasImages && hasTitle;
+    }, 15000, 500).then(function (ok) {
+      if (!ok) {
+        var state = getPrefillPageState();
+        warn('发布前信息页必填项未完成:', state);
+      }
+      return ok;
+    });
+  }
+
   // ====== 完整类目页填充流程 ======
 
   function fillCategoryPage(productData, deps) {
@@ -1007,9 +1050,12 @@
     if (detectPageVariant() === 'v4') {
       log('传统类目流程检测到发布前信息页，跳过类目树选择，直接填标题并点下一步');
       return fillTitleOnCategoryPage(productData.title || '').then(function () {
-        return delay(500);
-      }).then(function () {
-        return clickConfirmButton();
+        return waitForPrefillRequiredFields(productData.title || '', 1);
+      }).then(function (ready) {
+        if (!ready) return false;
+        return delay(500).then(function () {
+          return clickConfirmButton();
+        });
       }).then(function (ok) {
         return {
           success: !!ok,
@@ -1059,6 +1105,8 @@
     findCategorySearchInput: findCategorySearchInput,
     findNextStepButton: findConfirmButton,
     detectPageVariant: detectPageVariant,
-    fillTitleOnCategoryPage: fillTitleOnCategoryPage
+    fillTitleOnCategoryPage: fillTitleOnCategoryPage,
+    getPrefillPageState: getPrefillPageState,
+    waitForPrefillRequiredFields: waitForPrefillRequiredFields
   };
 }));

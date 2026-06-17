@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PDD商品发布助手",
-  "version": "2.1.8",
+  "version": "2.1.9",
   "description": "本地工作台驱动的拼多多商品自动上架助手",
   "icons": {
     "16": "icons/icon-16.svg",

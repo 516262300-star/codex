@@ -373,9 +373,21 @@
         return Promise.resolve();
       });
 
-      // Step 3: 等待 AI 预测分类并选择
+      // Step 3: 校验发布前信息页必填项
       chain = chain.then(function () {
-        Logger.info('v3/v4 Step 3: 手动选择分类');
+        Logger.info('v3/v4 Step 3: 校验主图和标题已填');
+        reportWorkbenchProgress('category_prefill_check', '类目页：正在确认主图和标题已填写');
+        return CategoryHandler.waitForPrefillRequiredFields(productData.title || '', 1).then(function (ready) {
+          if (!ready) {
+            throw new Error('发布前信息页主图或标题未填写完成');
+          }
+          return Utils.delay(500);
+        });
+      });
+
+      // Step 4: 等待 AI 预测分类并选择
+      chain = chain.then(function () {
+        Logger.info('v3/v4 Step 4: 手动选择分类');
         reportWorkbenchProgress('category_select', '类目页：正在选择最近使用分类/小拉手类目');
         return CategoryHandler.selectPredictedCategory(productData).then(function (ok) {
           if (!ok) {
@@ -385,9 +397,9 @@
         });
       });
 
-      // Step 4: 点击"下一步"
+      // Step 5: 点击"下一步"
       chain = chain.then(function () {
-        Logger.info('v3/v4 Step 4: 点击下一步按钮');
+        Logger.info('v3/v4 Step 5: 点击下一步按钮');
         reportWorkbenchProgress('category_next', '类目页：正在点击确认，进入商品编辑页');
         return CategoryHandler.clickNextStep();
       });
