@@ -99,8 +99,42 @@
       var input = pictureArea.querySelector('input[type="file"][accept*="image"]');
       if (input) return input;
     }
-    var all = document.querySelectorAll('input[type="file"][accept*="image"]');
-    return all[0] || null;
+    var inputs = Array.prototype.slice.call(document.querySelectorAll('input[type="file"]'));
+    var imageInputs = inputs.filter(function (input) {
+      var accept = input.getAttribute('accept') || '';
+      return !accept || accept.includes('image') || accept.includes('jpg') || accept.includes('jpeg') || accept.includes('png');
+    });
+    if (imageInputs.length === 0) return null;
+
+    function visibleBox(el) {
+      var current = el;
+      for (var depth = 0; current && depth < 6; depth++, current = current.parentElement) {
+        var rect = current.getBoundingClientRect();
+        if (rect.width > 20 && rect.height > 20) return rect;
+      }
+      return el.getBoundingClientRect();
+    }
+
+    var bodyText = document.body && (document.body.innerText || document.body.textContent || '');
+    if (bodyText && bodyText.includes('商品主图')) {
+      var scored = imageInputs.map(function (input, index) {
+        var rect = visibleBox(input);
+        var ancestor = input;
+        var text = '';
+        for (var depth = 0; ancestor && depth < 7; depth++, ancestor = ancestor.parentElement) {
+          text += ' ' + (ancestor.innerText || ancestor.textContent || '');
+        }
+        var score = index;
+        if (text.includes('商品主图') || text.includes('上传图片') || text.includes('轮播图')) score -= 1000;
+        score += Math.max(0, rect.top);
+        return { input: input, score: score };
+      }).sort(function (a, b) {
+        return a.score - b.score;
+      });
+      return scored[0].input;
+    }
+
+    return imageInputs[0] || null;
   }
 
   function findDetailImageFileInput() {

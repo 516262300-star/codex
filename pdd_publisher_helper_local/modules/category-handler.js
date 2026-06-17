@@ -968,10 +968,11 @@
       // 直接找标题输入框
       var input = document.querySelector('#goodsNameId input[type="text"]') ||
                   document.querySelector('#goods_name input[type="text"]') ||
-                  document.querySelector('input[placeholder*="商品标题"]');
+                  document.querySelector('input[placeholder*="商品标题"]') ||
+                  document.querySelector('input[placeholder*="商品描述"]');
       if (input && isElementVisible(input)) return input;
       return null;
-    }, 5000, 300).then(function (input) {
+    }, 10000, 300).then(function (input) {
       if (!input) {
         log('v3/v4 页面未找到标题输入框, 可能该变体无标题字段');
         return false;
