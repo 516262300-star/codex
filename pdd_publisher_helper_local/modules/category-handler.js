@@ -1003,6 +1003,21 @@
     log('类目信息:', productData.cat1Name, '>', productData.cat2Name, '>', productData.cat3Name, '>', productData.cat4Name);
     var results = { category: false, confirm: false };
 
+    if (detectPageVariant() === 'v4') {
+      log('传统类目流程检测到发布前信息页，跳过类目树选择，直接填标题并点下一步');
+      return fillTitleOnCategoryPage(productData.title || '').then(function () {
+        return delay(500);
+      }).then(function () {
+        return clickConfirmButton();
+      }).then(function (ok) {
+        return {
+          success: !!ok,
+          results: { category: true, confirm: !!ok, skippedCategoryTree: true },
+          error: ok ? undefined : '下一步按钮点击失败'
+        };
+      });
+    }
+
     return selectCategoryWithFallback({
       cat1Name: productData.cat1Name,
       cat2Name: productData.cat2Name,
