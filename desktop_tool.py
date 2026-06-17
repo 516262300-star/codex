@@ -35,6 +35,7 @@ SESSION_PID_PATH = ROOT / ".tmp_tool" / "pdd_session.pid"
 COMMAND_PATH = ROOT / ".tmp_tool" / "pdd_category_command.json"
 COMMAND_STATUS_PATH = ROOT / ".tmp_tool" / "pdd_category_command_status.json"
 PLUGIN_PRODUCT_STATUS_PATH = ROOT / ".tmp_tool" / "plugin_product_status.json"
+DRAFT_HISTORY_PATH = ROOT / ".tmp_tool" / "saved_draft_history.json"
 MATERIAL_REQUEST_PATH = ROOT / ".tmp_tool" / "plugin_material_request.json"
 MATERIAL_RESPONSE_PATH = ROOT / ".tmp_tool" / "plugin_material_response.json"
 TITLE_CACHE_PATH = ROOT / ".tmp_tool" / "title_candidates.json"
@@ -1071,6 +1072,105 @@ def write_plugin_status(status: dict[str, Any]) -> None:
         tmp_path.replace(PLUGIN_PRODUCT_STATUS_PATH)
 
 
+def read_saved_draft_history() -> dict[str, Any]:
+    default = {"version": 1, "total": 0, "items": []}
+    if not DRAFT_HISTORY_PATH.exists():
+        return default
+    try:
+        data = json.loads(DRAFT_HISTORY_PATH.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return default
+    if not isinstance(data, dict):
+        return default
+    items = data.get("items")
+    if not isinstance(items, list):
+        items = []
+    data["items"] = items
+    data["total"] = len(items)
+    data["version"] = int(data.get("version") or 1)
+    return data
+
+
+def write_saved_draft_history(history: dict[str, Any]) -> None:
+    history["version"] = 1
+    history["total"] = len(history.get("items") or [])
+    DRAFT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = DRAFT_HISTORY_PATH.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(DRAFT_HISTORY_PATH)
+
+
+def parse_goods_id_from_url(url: str) -> str:
+    try:
+        query = parse_qs(urlparse(url).query)
+        return str((query.get("goods_id") or [""])[0])
+    except Exception:
+        return ""
+
+
+def append_saved_draft_history(status: dict[str, Any], progress: dict[str, Any]) -> dict[str, Any] | None:
+    if progress.get("stage") != "draft_saved":
+        return None
+    detail = progress.get("detail") if isinstance(progress.get("detail"), dict) else {}
+    task_id = str(status.get("id") or "")
+    url = str(progress.get("url") or detail.get("url") or "")
+    entry = {
+        "saved_at": progress.get("updated_at") or time.strftime("%Y-%m-%d %H:%M:%S"),
+        "task_id": task_id,
+        "title": str(detail.get("title") or ""),
+        "mall_name": str(detail.get("mall_name") or ""),
+        "mall_id": str(detail.get("mall_id") or ""),
+        "url": url,
+        "goods_id": str(detail.get("goods_id") or parse_goods_id_from_url(url)),
+        "product_folder": str(detail.get("product_folder") or ""),
+        "material_path": str(detail.get("material_path") or ""),
+        "erp_model": str(detail.get("erp_model") or ""),
+        "category": str(detail.get("category") or ""),
+        "product_code": str(detail.get("product_code") or ""),
+        "sku_count": int(detail.get("sku_count") or 0),
+        "main_image_count": int(detail.get("main_image_count") or 0),
+        "detail_image_count": int(detail.get("detail_image_count") or 0),
+    }
+
+    history = read_saved_draft_history()
+    items = history.get("items") or []
+    for item in items:
+        if task_id and str(item.get("task_id") or "") == task_id:
+            item.update(entry)
+            write_saved_draft_history(history)
+            return entry
+        if url and str(item.get("url") or "") == url and str(item.get("title") or "") == entry["title"]:
+            item.update(entry)
+            write_saved_draft_history(history)
+            return entry
+
+    items.append(entry)
+    history["items"] = items
+    write_saved_draft_history(history)
+    return entry
+
+
+def enrich_latest_saved_draft(progress: dict[str, Any]) -> None:
+    url = str(progress.get("url") or "")
+    goods_id = parse_goods_id_from_url(url)
+    if not url and not goods_id:
+        return
+    history = read_saved_draft_history()
+    items = history.get("items") or []
+    if not items:
+        return
+    latest = items[-1]
+    changed = False
+    if url and not str(latest.get("url") or "").startswith("https://mms.pinduoduo.com/goods/goods_add/success"):
+        latest["url"] = url
+        changed = True
+    if goods_id and not latest.get("goods_id"):
+        latest["goods_id"] = goods_id
+        changed = True
+    if changed:
+        write_saved_draft_history(history)
+
+
 def update_plugin_progress(payload: dict[str, Any]) -> dict[str, Any]:
     status = read_plugin_status()
     progress = {
@@ -1084,6 +1184,11 @@ def update_plugin_progress(payload: dict[str, Any]) -> dict[str, Any]:
     if "detail" in payload:
         progress["detail"] = payload.get("detail")
     status["progress"] = progress
+    saved_entry = append_saved_draft_history(status, progress)
+    if saved_entry:
+        status["last_saved_draft"] = saved_entry
+    elif progress["stage"] in {"done", "page_changed"}:
+        enrich_latest_saved_draft(progress)
     if progress["stage"] in {"done", "error", "queued"}:
         status["status_text"] = progress["stage"]
     write_plugin_status(status)
@@ -1179,6 +1284,14 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         "marketPrice": max((Decimal(str(spec.get("single_price") or "0")) for spec in sku_specs), default=Decimal("0")),
         "batchDiscount": "9.9",
         "productCode": str(package.get("price_multiplier") or meta.price_multiplier),
+        "_source": {
+            "product_folder": str(package.get("product_folder") or ""),
+            "material_path": str(package.get("material_path") or ""),
+            "erp_model": str(package.get("erp_model") or meta.erp_model),
+            "category_path": category_path,
+            "main_image_count": len(package.get("main_images") or []),
+            "detail_image_count": len(package.get("detail_images") or []),
+        },
         "_localSafetyMode": True,
     }
 
@@ -1399,6 +1512,7 @@ HTML = r"""<!doctype html>
         <div class="progress-head"><span><span class="progress-dot" id="progressDot"></span>自动填充进度</span><span id="progressAge">未开始</span></div>
         <div class="progress-message" id="progressMessage">还没有收到插件心跳。</div>
         <div class="progress-meta" id="progressMeta">开始第三步后，这里会显示当前执行到哪一步。</div>
+        <div class="progress-meta" id="draftHistory">累计保存草稿：读取中。</div>
       </div>
     </section>
     <section>
@@ -1422,6 +1536,7 @@ HTML = r"""<!doctype html>
     const progressAge = document.getElementById("progressAge");
     const progressMessage = document.getElementById("progressMessage");
     const progressMeta = document.getElementById("progressMeta");
+    const draftHistory = document.getElementById("draftHistory");
 
     function writeLog(text) { log.textContent = text; }
     function setState(text) { pill.textContent = text; }
@@ -1462,6 +1577,29 @@ HTML = r"""<!doctype html>
         progressDot.className = "progress-dot stale";
         progressAge.textContent = "读取失败";
         progressMessage.textContent = "工作台暂时读取不到插件进度。";
+      }
+    }
+    function setDraftHistoryView(history) {
+      const items = (history && history.items) || [];
+      const total = history && typeof history.total === "number" ? history.total : items.length;
+      const recent = items.slice(-5).reverse();
+      if (!recent.length) {
+        draftHistory.innerHTML = "累计保存草稿：0 条。";
+        return;
+      }
+      const rows = recent.map(item => {
+        const link = item.url ? `<a href="${escapeHTML(item.url)}" target="_blank">链接</a>` : "";
+        return `<div>${escapeHTML(item.saved_at || "")}｜${escapeHTML(item.mall_name || "未知店铺")}｜${escapeHTML(item.title || "未记录标题")} ${link}</div>`;
+      }).join("");
+      draftHistory.innerHTML = `<div>累计保存草稿：${total} 条</div>${rows}`;
+    }
+    async function refreshDraftHistory() {
+      try {
+        const response = await fetch("/api/draft-history");
+        const data = await response.json();
+        setDraftHistoryView(data.data || {});
+      } catch (_) {
+        draftHistory.textContent = "累计保存草稿：读取失败。";
       }
     }
     function requireTaskInputs({needPath = false} = {}) {
@@ -1774,7 +1912,9 @@ HTML = r"""<!doctype html>
     };
     loadDefaults();
     refreshProgress();
+    refreshDraftHistory();
     setInterval(refreshProgress, 2000);
+    setInterval(refreshDraftHistory, 5000);
   </script>
 </body>
 </html>
@@ -1811,6 +1951,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/plugin-progress":
             self._send_json({"code": 0, "msg": "ok", "data": read_plugin_status()})
+            return
+        if parsed.path == "/api/draft-history":
+            self._send_json({"code": 0, "msg": "ok", "data": read_saved_draft_history()})
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 

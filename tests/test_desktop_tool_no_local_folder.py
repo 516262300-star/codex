@@ -160,3 +160,58 @@ def test_plugin_product_json_falls_back_to_main_image_generated_videos(tmp_path,
         "name": "商品讲解视频.webm",
         "makeVideoFromImage": True,
     }
+
+
+def test_append_saved_draft_history_appends_and_deduplicates(tmp_path, monkeypatch):
+    history_path = tmp_path / "saved_draft_history.json"
+    monkeypatch.setattr(desktop_tool, "DRAFT_HISTORY_PATH", history_path)
+    status = {"id": 123}
+    progress = {
+        "stage": "draft_saved",
+        "updated_at": "2026-06-17 15:30:00",
+        "url": "https://mms.pinduoduo.com/goods/goods_add/index?goods_id=abc",
+        "detail": {
+            "title": "测试商品",
+            "mall_name": "测试店铺",
+            "mall_id": "mall-1",
+            "material_path": "2026/2705",
+            "sku_count": 2,
+        },
+    }
+
+    desktop_tool.append_saved_draft_history(status, progress)
+    desktop_tool.append_saved_draft_history(status, progress)
+
+    history = desktop_tool.read_saved_draft_history()
+    assert history["total"] == 1
+    assert history["items"][0]["title"] == "测试商品"
+    assert history["items"][0]["mall_name"] == "测试店铺"
+    assert history["items"][0]["task_id"] == "123"
+    assert history["items"][0]["goods_id"] == "abc"
+
+
+def test_enrich_latest_saved_draft_backfills_success_url(tmp_path, monkeypatch):
+    history_path = tmp_path / "saved_draft_history.json"
+    monkeypatch.setattr(desktop_tool, "DRAFT_HISTORY_PATH", history_path)
+    desktop_tool.write_saved_draft_history({
+        "version": 1,
+        "items": [
+            {
+                "saved_at": "2026-06-17 15:30:00",
+                "task_id": "123",
+                "title": "测试商品",
+                "url": "https://mms.pinduoduo.com/goods/goods_add/index",
+                "goods_id": "",
+            }
+        ],
+    })
+
+    desktop_tool.enrich_latest_saved_draft({
+        "stage": "page_changed",
+        "url": "https://mms.pinduoduo.com/goods/goods_add/success?goods_id=987",
+    })
+
+    history = desktop_tool.read_saved_draft_history()
+    assert history["total"] == 1
+    assert history["items"][0]["goods_id"] == "987"
+    assert history["items"][0]["url"].endswith("goods_id=987")

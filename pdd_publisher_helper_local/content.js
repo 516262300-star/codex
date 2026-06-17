@@ -910,6 +910,72 @@
     return true;
   }
 
+  function waitForDraftSaveResult() {
+    var start = Date.now();
+    var maxWait = 20000;
+    return new Promise(function (resolve) {
+      function check() {
+        var url = window.location.href;
+        var bodyText = document.body && (document.body.innerText || document.body.textContent || '');
+        if (url.indexOf('/goods/goods_add/success') >= 0 || (bodyText && bodyText.indexOf('保存成功') >= 0)) {
+          resolve(true);
+          return;
+        }
+        if (bodyText && (bodyText.indexOf('保存失败') >= 0 || bodyText.indexOf('上传失败') >= 0 || bodyText.indexOf('发布失败') >= 0)) {
+          resolve(false);
+          return;
+        }
+        if (Date.now() - start >= maxWait) {
+          resolve(true);
+          return;
+        }
+        setTimeout(check, 800);
+      }
+      setTimeout(check, 800);
+    });
+  }
+
+  function currentMallInfo() {
+    try {
+      var raw = localStorage.getItem('new_userinfo');
+      if (!raw) return {};
+      var info = JSON.parse(raw);
+      var mall = info && info.mall ? info.mall : {};
+      return {
+        mall_id: mall.mall_id || info.mall_id || '',
+        mall_name: mall.mall_name || ''
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function draftHistoryDetail(productData, stepResults) {
+    var source = productData._source || {};
+    var mall = currentMallInfo();
+    return {
+      title: productData.title || '',
+      mall_id: mall.mall_id || '',
+      mall_name: mall.mall_name || '',
+      url: window.location.href,
+      goods_id: (new URLSearchParams(window.location.search)).get('goods_id') || '',
+      product_folder: source.product_folder || '',
+      material_path: source.material_path || '',
+      erp_model: source.erp_model || '',
+      category: source.category_path || [
+        productData.cat1Name || '',
+        productData.cat2Name || '',
+        productData.cat3Name || '',
+        productData.cat4Name || ''
+      ].filter(Boolean).join(' > '),
+      product_code: productData.productCode || '',
+      sku_count: Array.isArray(productData.skus) ? productData.skus.length : 0,
+      main_image_count: source.main_image_count || (productData.carouselImages ? Object.keys(productData.carouselImages).length : 0),
+      detail_image_count: source.detail_image_count || (Array.isArray(productData.detailImages) ? productData.detailImages.length : 0),
+      results: stepResults
+    };
+  }
+
   function saveDraftAfterValidation(productData, stepResults) {
     var missing = validateBeforeSaveDraft(productData, stepResults);
     if (missing.length > 0) {
@@ -934,9 +1000,16 @@
       return Promise.resolve(false);
     }
 
-    stepResults.draftSaved = true;
-    return Utils.delay(3000).then(function () {
-      reportWorkbenchProgress('draft_saved', '草稿已点击保存，请在草稿箱核对', stepResults);
+    return waitForDraftSaveResult().then(function (saved) {
+      stepResults.draftSaved = !!saved;
+      if (!saved) {
+        var failed = '保存草稿后页面提示失败，请人工检查';
+        stepResults.draftSkippedReason = failed;
+        reportWorkbenchProgress('draft_skipped', failed, stepResults);
+        Toast.show(failed, 'warning', 8000);
+        return false;
+      }
+      reportWorkbenchProgress('draft_saved', '草稿已点击保存，请在草稿箱核对', draftHistoryDetail(productData, stepResults));
       Toast.show('草稿已保存，请到草稿箱核对', 'success', 6000);
       return true;
     });
