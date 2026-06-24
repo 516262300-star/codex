@@ -307,6 +307,12 @@
   }
 
   function uploadMainVideo(videoItem) {
+    if (videoItem && videoItem.useMaterialPicker && videoItem.materialPath) {
+      return ImageHandler.selectMainVideoFromMaterial(videoItem, {
+        Toast: Toast,
+        delay: Utils.delay
+      });
+    }
     return ImageHandler.uploadVideo(videoItem, ['主图视频', '商品主图', '轮播图'], {
       Toast: Toast,
       delay: Utils.delay,
@@ -394,6 +400,9 @@
         items.push({
           url: url,
           name: item.name || item.filename || '主图视频.mp4',
+          filename: item.filename || item.name || '主图视频.mp4',
+          materialPath: item.materialPath || item.material_path || '',
+          useMaterialPicker: !!item.useMaterialPicker,
           makeVideoFromImage: !!item.makeVideoFromImage
         });
       }
@@ -799,7 +808,10 @@
       if (productData.explainVideo) {
         videoTasks.push(function () {
           reportWorkbenchProgress('detail_explain_video', '详情页：正在上传商品讲解视频');
-          return uploadVideo(productData.explainVideo, ['商品讲解视频', '讲解视频']).then(function (ok) {
+          var explainUpload = productData.explainVideo && productData.explainVideo.useMaterialPicker && productData.explainVideo.materialPath
+            ? ImageHandler.selectVideoFromMaterial(productData.explainVideo, ['商品讲解视频', '讲解视频'], { Toast: Toast, delay: Utils.delay })
+            : uploadVideo(productData.explainVideo, ['商品讲解视频', '讲解视频']);
+          return explainUpload.then(function (ok) {
             stepResults.explainVideo = !!ok;
             reportWorkbenchProgress(ok ? 'detail_explain_video_done' : 'detail_explain_video_skipped', ok ? '详情页：商品讲解视频已上传' : '详情页：商品讲解视频未上传，请检查入口');
           });

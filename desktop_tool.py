@@ -659,6 +659,7 @@ async def upload_plan_payload(
                 "filename": str(video.get("filename") or ""),
                 "url": str(video.get("url") or ""),
                 "size": video.get("size"),
+                "material_path": str(material_path).rstrip("/\\") + "/主图",
             }
             for index, video in enumerate(main_videos, start=1)
         ],
@@ -1236,13 +1237,15 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         {
             "url": str(item.get("url") or ""),
             "name": str(item.get("filename") or item.get("name") or f"主图视频{index}.mp4"),
+            "filename": str(item.get("filename") or item.get("name") or f"主图视频{index}.mp4"),
+            "materialPath": str(item.get("material_path") or ""),
+            "useMaterialPicker": True,
         }
         for index, item in enumerate(package.get("main_videos") or [], start=1)
         if item.get("url")
     ]
-    main_video_urls = [item["url"] for item in main_video_items]
-    product_video = main_video_urls[0] if main_video_urls else ""
-    explain_video = main_video_urls[1] if len(main_video_urls) > 1 else product_video
+    product_video = main_video_items[0] if main_video_items else ""
+    explain_video = main_video_items[1] if len(main_video_items) > 1 else product_video
     if not product_video and main_image_urls:
         product_video = {
             "url": main_image_urls[0],

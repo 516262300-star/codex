@@ -265,6 +265,234 @@
     return delay(600);
   }
 
+  function isElementVisible(el) {
+    if (!el) return false;
+    var style = window.getComputedStyle(el);
+    var rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  }
+
+  function normalizeText(text) {
+    return String(text || '').replace(/\s+/g, '').trim();
+  }
+
+  function findMaterialVideoDialog() {
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], [class*="Modal"], [class*="modal"], body > div'));
+    var best = null;
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!isElementVisible(el)) continue;
+      var text = el.innerText || el.textContent || '';
+      if (text.includes('图片空间') && text.includes('确认')) {
+        var rect = el.getBoundingClientRect();
+        var score = rect.width * rect.height;
+        if (!best || score > best.score) best = { el: el, score: score };
+      }
+    }
+    return best && best.el;
+  }
+
+  function waitForMaterialVideoDialog(delay, maxWait) {
+    var start = Date.now();
+    maxWait = maxWait || 12000;
+    return new Promise(function (resolve) {
+      function check() {
+        var modal = findMaterialVideoDialog();
+        if (modal) {
+          resolve(modal);
+          return;
+        }
+        if (Date.now() - start >= maxWait) {
+          resolve(null);
+          return;
+        }
+        delay(300).then(check);
+      }
+      check();
+    });
+  }
+
+  function clickBestVisibleText(container, targetText, options) {
+    options = options || {};
+    var exact = options.exact !== false;
+    var modalRect = container.getBoundingClientRect();
+    var nodes = Array.prototype.slice.call(container.querySelectorAll('button, [role="button"], span, div, li, a'));
+    var target = normalizeText(targetText);
+    var best = null;
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!isElementVisible(el)) continue;
+      var text = normalizeText(el.innerText || el.textContent || '');
+      if (!text) continue;
+      if (exact ? text !== target : text.indexOf(target) < 0) continue;
+      var rect = el.getBoundingClientRect();
+      if (options.leftOnly && rect.left > modalRect.left + modalRect.width * 0.38) continue;
+      if (options.rightOnly && rect.left < modalRect.left + modalRect.width * 0.30) continue;
+      var score = text.length + rect.width / 100 + rect.height / 100 + Math.max(0, rect.top - modalRect.top) / 1000;
+      if (!best || score < best.score) best = { el: el, score: score };
+    }
+    if (!best) return false;
+    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return true;
+  }
+
+  function clickMainVideoTrigger(delay) {
+    var area = findPrefillMainImageArea();
+    if (!area) return Promise.resolve(false);
+    return activateMainVideoUploadTab({ delay: delay }).then(function () {
+      if (findMaterialVideoDialog()) return true;
+
+      var controls = Array.prototype.slice.call(area.querySelectorAll('button, [role="button"], div, span, a'));
+      var best = null;
+      for (var i = 0; i < controls.length; i++) {
+        var el = controls[i];
+        if (!isElementVisible(el)) continue;
+        var text = normalizeText(el.innerText || el.textContent || '');
+        var rect = el.getBoundingClientRect();
+        var score = null;
+        if (text === '上传视频' || text === '视频' || text === '选择视频') score = 0;
+        else if (text.includes('上传视频') || text.includes('选择视频')) score = 500;
+        else if (rect.width >= 50 && rect.height >= 50 && text.includes('视频')) score = 1000;
+        if (score === null) continue;
+        if (text.includes('讲解') || text.includes('详情') || text.includes('SKU')) score += 5000;
+        score += Math.max(0, rect.top) + Math.max(0, rect.left) / 1000 + text.length;
+        if (!best || score < best.score) best = { el: el, score: score };
+      }
+      if (!best) return false;
+      best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return true;
+    });
+  }
+
+  function clickVideoTriggerNearText(labels, delay) {
+    var area = findUploadAreaNearText(labels) || document.body;
+    var controls = Array.prototype.slice.call(area.querySelectorAll('button, [role="button"], div, span, a'));
+    var best = null;
+    for (var i = 0; i < controls.length; i++) {
+      var el = controls[i];
+      if (!isElementVisible(el)) continue;
+      var text = normalizeText(el.innerText || el.textContent || '');
+      var rect = el.getBoundingClientRect();
+      var score = null;
+      if (text === '上传视频' || text === '选择视频') score = 0;
+      else if (text.includes('上传视频') || text.includes('选择视频')) score = 500;
+      else if (rect.width >= 50 && rect.height >= 50 && text.includes('视频')) score = 1000;
+      if (score === null) continue;
+      score += Math.max(0, rect.top) + Math.max(0, rect.left) / 1000 + text.length;
+      if (!best || score < best.score) best = { el: el, score: score };
+    }
+    if (!best) return Promise.resolve(false);
+    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return delay(500).then(function () { return true; });
+  }
+
+  function navigateMaterialPathInDialog(modal, materialPath, delay) {
+    var parts = String(materialPath || '').split(/[\\/]+/).filter(Boolean);
+    if (!parts.length) return Promise.resolve(true);
+    var chain = Promise.resolve(true);
+    parts.forEach(function (part) {
+      chain = chain.then(function () {
+        var refreshed = findMaterialVideoDialog() || modal;
+        var clicked = clickBestVisibleText(refreshed, part, { exact: true, leftOnly: true });
+        if (!clicked) clicked = clickBestVisibleText(refreshed, part, { exact: false, leftOnly: true });
+        return delay(clicked ? 800 : 100).then(function () { return clicked; });
+      });
+    });
+    return chain;
+  }
+
+  function selectVideoCardInDialog(modal, videoItem, delay) {
+    var refreshed = findMaterialVideoDialog() || modal;
+    var name = String((videoItem && (videoItem.filename || videoItem.name)) || '');
+    var stem = name.replace(/\.[a-z0-9]+$/i, '');
+    var probes = [name, stem, stem.slice(0, 12), stem.slice(0, 8)].filter(function (x) { return normalizeText(x).length >= 2; });
+    for (var i = 0; i < probes.length; i++) {
+      if (clickBestVisibleText(refreshed, probes[i], { exact: false, rightOnly: true })) {
+        return delay(500).then(function () { return true; });
+      }
+    }
+
+    var rect = refreshed.getBoundingClientRect();
+    var nodes = Array.prototype.slice.call(refreshed.querySelectorAll('div, li'));
+    var best = null;
+    for (var ni = 0; ni < nodes.length; ni++) {
+      var el = nodes[ni];
+      if (!isElementVisible(el)) continue;
+      var box = el.getBoundingClientRect();
+      var text = normalizeText(el.innerText || el.textContent || '');
+      if (box.left < rect.left + rect.width * 0.25) continue;
+      if (box.bottom > rect.bottom - 70 || box.top < rect.top + 80) continue;
+      if (text.includes('全部文件') || text.includes('查询') || text.includes('刷新') || text.includes('本地上传') || text.includes('确认')) continue;
+      if (box.width < 45 || box.height < 45) continue;
+      var score = Math.abs(box.width - 120) + Math.abs(box.height - 180) + Math.max(0, box.top - rect.top) + Math.max(0, box.left - rect.left) / 1000;
+      if (!best || score < best.score) best = { el: el, score: score };
+    }
+    if (!best) return Promise.resolve(false);
+    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return delay(500).then(function () { return true; });
+  }
+
+  function confirmMaterialVideoDialog(delay) {
+    var modal = findMaterialVideoDialog();
+    if (!modal) return Promise.resolve(false);
+    var buttons = Array.prototype.slice.call(modal.querySelectorAll('button, [role="button"]'));
+    var best = null;
+    for (var i = 0; i < buttons.length; i++) {
+      var btn = buttons[i];
+      if (!isElementVisible(btn) || btn.disabled) continue;
+      var text = normalizeText(btn.innerText || btn.textContent || '');
+      if (text !== '确认') continue;
+      var rect = btn.getBoundingClientRect();
+      var score = -rect.top + rect.left / 1000;
+      if (!best || score > best.score) best = { el: btn, score: score };
+    }
+    if (!best) return Promise.resolve(false);
+    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return delay(1200).then(function () { return !findMaterialVideoDialog(); });
+  }
+
+  function selectVideoFromMaterial(videoItem, labels, options) {
+    labels = Array.isArray(labels) ? labels : [labels || '视频'];
+    options = options || {};
+    var Toast = options.Toast;
+    var delay = options.delay || function (ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    };
+    var materialPath = videoItem && videoItem.materialPath;
+    if (!materialPath) return Promise.resolve(false);
+    var labelText = labels[0] || '视频';
+    if (Toast) Toast.show('正在从图片空间选择' + labelText + '...', 'info', 3000);
+
+    var triggerPromise = labels.indexOf('主图视频') >= 0
+      ? clickMainVideoTrigger(delay)
+      : clickVideoTriggerNearText(labels, delay);
+
+    return triggerPromise
+      .then(function () { return waitForMaterialVideoDialog(delay, 12000); })
+      .then(function (modal) {
+        if (!modal) {
+          if (Toast) Toast.show('未打开图片空间视频选择弹窗', 'warning', 4000);
+          return false;
+        }
+        return navigateMaterialPathInDialog(modal, materialPath, delay).then(function () {
+          return selectVideoCardInDialog(modal, videoItem, delay);
+        }).then(function (selected) {
+          if (!selected) {
+            if (Toast) Toast.show('未选中图片空间里的主图视频', 'warning', 4000);
+            return false;
+          }
+          return confirmMaterialVideoDialog(delay);
+        }).then(function (ok) {
+          if (Toast) Toast.show(ok ? '图片空间' + labelText + '已选择' : '图片空间' + labelText + '未确认，请检查页面', ok ? 'success' : 'warning', 4000);
+          return !!ok;
+        });
+      });
+  }
+
+  function selectMainVideoFromMaterial(videoItem, options) {
+    return selectVideoFromMaterial(videoItem, ['主图视频', '商品主图', '轮播图'], options);
+  }
+
   function findDetailImageFileInput() {
     var tracked = document.querySelector('input[data-tracking-click-viewid="detail_img_localfile_upload"]');
     if (tracked) return tracked;
@@ -1207,6 +1435,8 @@
     findPrefillMainImageArea: findPrefillMainImageArea,
     findMainVideoFileInput: findMainVideoFileInput,
     activateMainVideoUploadTab: activateMainVideoUploadTab,
+    selectVideoFromMaterial: selectVideoFromMaterial,
+    selectMainVideoFromMaterial: selectMainVideoFromMaterial,
     findDetailImageFileInput: findDetailImageFileInput,
     findFileInputNearText: findFileInputNearText,
     uploadVideo: uploadVideo,

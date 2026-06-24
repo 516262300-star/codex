@@ -119,10 +119,18 @@ def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     data = desktop_tool.plugin_product_json(package)
 
     assert data["carouselImages"] == {"image1": "https://example.test/main.jpg"}
-    assert data["mainVideos"] == [{"url": "https://example.test/main.mp4", "name": "主图视频1.mp4"}]
+    assert data["mainVideos"] == [
+        {
+            "url": "https://example.test/main.mp4",
+            "name": "主图视频1.mp4",
+            "filename": "主图视频1.mp4",
+            "materialPath": "",
+            "useMaterialPicker": True,
+        }
+    ]
     assert data["detailImages"] == ["https://example.test/detail.jpg"]
-    assert data["productVideo"] == "https://example.test/main.mp4"
-    assert data["explainVideo"] == "https://example.test/main.mp4"
+    assert data["productVideo"] == data["mainVideos"][0]
+    assert data["explainVideo"] == data["mainVideos"][0]
     assert data["skus"][0]["productCode"] == "8105#古铜色"
     assert data["marketPrice"] == Decimal("19.00")
     assert data["batchDiscount"] == "9.9"
