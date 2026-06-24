@@ -119,6 +119,7 @@ def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     data = desktop_tool.plugin_product_json(package)
 
     assert data["carouselImages"] == {"image1": "https://example.test/main.jpg"}
+    assert data["mainVideos"] == [{"url": "https://example.test/main.mp4", "name": "主图视频1.mp4"}]
     assert data["detailImages"] == ["https://example.test/detail.jpg"]
     assert data["productVideo"] == "https://example.test/main.mp4"
     assert data["explainVideo"] == "https://example.test/main.mp4"

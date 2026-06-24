@@ -306,6 +306,16 @@
     });
   }
 
+  function uploadMainVideo(videoItem) {
+    return ImageHandler.uploadVideo(videoItem, ['主图视频', '商品主图', '轮播图'], {
+      Toast: Toast,
+      delay: Utils.delay,
+      prepareInput: ImageHandler.activateMainVideoUploadTab,
+      fileInputFinder: ImageHandler.findMainVideoFileInput,
+      areaFinder: ImageHandler.findPrefillMainImageArea
+    });
+  }
+
   function uploadSkuImages(imageDataArray) {
     return ImageHandler.uploadSkuImages(imageDataArray, {
       Toast: Toast,
@@ -365,6 +375,36 @@
     addFromObject(productData.mainImages);
     addFromArray(productData.main_images);
     addFromArray(productData.mainImages);
+    return items;
+  }
+
+  function collectMainVideoItems(productData) {
+    var items = [];
+    var seen = {};
+
+    function add(item) {
+      if (!item) return;
+      var url = typeof item === 'string' ? item : item.url;
+      url = String(url || '').trim();
+      if (!url || seen[url]) return;
+      seen[url] = true;
+      if (typeof item === 'string') {
+        items.push({ url: url });
+      } else {
+        items.push({
+          url: url,
+          name: item.name || item.filename || '主图视频.mp4',
+          makeVideoFromImage: !!item.makeVideoFromImage
+        });
+      }
+    }
+
+    if (Array.isArray(productData.mainVideos)) {
+      productData.mainVideos.forEach(add);
+    }
+    if (productData.productVideo && !(productData.productVideo.makeVideoFromImage)) {
+      add(productData.productVideo);
+    }
     return items;
   }
 
@@ -665,6 +705,7 @@
   function executeDetailFill(productData) {
     var steps = [];
     var stepResults = {};
+    var mainVideoUploaded = false;
 
     // Step 1: 本地版只填独立生成/选用后的标题
     steps.push(function () {
@@ -730,10 +771,23 @@
       return Promise.resolve();
     });
 
-    // Step 3: Fill the common listing attributes from the local workbench.
+    // Step 3: 商品视频属于主图区域，优先走主图里的视频入口。
+    steps.push(function () {
+      var mainVideos = collectMainVideoItems(productData);
+      if (!mainVideos.length) return Promise.resolve();
+      reportWorkbenchProgress('detail_main_video', '详情页：正在处理主图视频');
+      return uploadMainVideo(mainVideos[0]).then(function (ok) {
+        mainVideoUploaded = !!ok;
+        stepResults.mainVideo = !!ok;
+        reportWorkbenchProgress(ok ? 'detail_main_video_done' : 'detail_main_video_skipped', ok ? '详情页：主图视频已处理' : '详情页：主图视频未处理，请检查主图视频入口');
+        return Utils.delay(800);
+      });
+    });
+
+    // Step 4: Fill product/explain video fields that are not already handled by main image video.
     steps.push(function () {
       var videoTasks = [];
-      if (productData.productVideo) {
+      if (productData.productVideo && !mainVideoUploaded && productData.productVideo.makeVideoFromImage) {
         videoTasks.push(function () {
           reportWorkbenchProgress('detail_product_video', '详情页：正在上传商品视频');
           return uploadVideo(productData.productVideo, ['商品视频']).then(function (ok) {

@@ -1232,11 +1232,15 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         for item in package.get("detail_images") or []
         if item.get("url")
     ]
-    main_video_urls = [
-        str(item.get("url") or "")
-        for item in package.get("main_videos") or []
+    main_video_items = [
+        {
+            "url": str(item.get("url") or ""),
+            "name": str(item.get("filename") or item.get("name") or f"主图视频{index}.mp4"),
+        }
+        for index, item in enumerate(package.get("main_videos") or [], start=1)
         if item.get("url")
     ]
+    main_video_urls = [item["url"] for item in main_video_items]
     product_video = main_video_urls[0] if main_video_urls else ""
     explain_video = main_video_urls[1] if len(main_video_urls) > 1 else product_video
     if not product_video and main_image_urls:
@@ -1270,6 +1274,7 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         "cat3Name": category_parts[2],
         "cat4Name": category_parts[3],
         "carouselImages": main_images,
+        "mainVideos": main_video_items,
         "detailImages": detail_images,
         "productVideo": product_video,
         "explainVideo": explain_video,

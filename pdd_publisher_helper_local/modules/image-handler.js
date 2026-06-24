@@ -179,6 +179,92 @@
            document.body;
   }
 
+  function findMainVideoFileInput() {
+    var area = findPrefillMainImageArea();
+    var scopedInputs = area ? Array.prototype.slice.call(area.querySelectorAll('input[type="file"]')) : [];
+
+    function isVideoInput(input) {
+      var accept = (input.getAttribute('accept') || '').toLowerCase();
+      return !accept || accept.includes('video') || accept.includes('mp4') || accept.includes('mov') || accept.includes('webm') || accept.includes('m4v');
+    }
+
+    function scoreInput(input, index) {
+      var score = index;
+      var text = '';
+      var current = input;
+      for (var depth = 0; current && depth < 10; depth++, current = current.parentElement) {
+        text += ' ' + (current.innerText || current.textContent || '');
+        if (current.id === 'goodsCarousel' || current.id === 'goodsCarouselId') score -= 5000;
+        if (current.id === 'picture' || current.id === 'basic.carousel_gallery') score -= 2500;
+      }
+      if (text.includes('主图') || text.includes('轮播图') || text.includes('视频')) score -= 1500;
+      if (text.includes('商品讲解视频') || text.includes('讲解视频')) score += 5000;
+      if (text.includes('详情图') || text.includes('商品详情') || text.includes('规格图') || text.includes('SKU')) score += 4000;
+      var rect = input.getBoundingClientRect();
+      score += Math.max(0, rect.top);
+      return score;
+    }
+
+    var videoInputs = scopedInputs.filter(isVideoInput);
+    if (videoInputs.length > 0) {
+      return videoInputs.map(function (input, index) {
+        return { input: input, score: scoreInput(input, index) };
+      }).sort(function (a, b) {
+        return a.score - b.score;
+      })[0].input;
+    }
+
+    var allInputs = Array.prototype.slice.call(document.querySelectorAll('input[type="file"]')).filter(isVideoInput);
+    var candidates = allInputs.filter(function (input) {
+      var text = '';
+      var current = input;
+      for (var depth = 0; current && depth < 10; depth++, current = current.parentElement) {
+        text += ' ' + (current.innerText || current.textContent || '');
+      }
+      return (text.includes('商品主图') || text.includes('主图') || text.includes('轮播图')) &&
+             !text.includes('商品讲解视频') &&
+             !text.includes('详情图') &&
+             !text.includes('规格图') &&
+             !text.includes('SKU');
+    });
+    if (candidates.length === 0) return null;
+    return candidates.map(function (input, index) {
+      return { input: input, score: scoreInput(input, index) };
+    }).sort(function (a, b) {
+      return a.score - b.score;
+    })[0].input;
+  }
+
+  function activateMainVideoUploadTab(options) {
+    options = options || {};
+    var delay = options.delay || function (ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    };
+    var area = findPrefillMainImageArea();
+    if (!area || findMainVideoFileInput()) return Promise.resolve();
+
+    var controls = Array.prototype.slice.call(area.querySelectorAll('button, [role="button"], span, div, a'));
+    var best = null;
+    for (var i = 0; i < controls.length; i++) {
+      var el = controls[i];
+      if (el.offsetParent === null) continue;
+      var text = (el.innerText || el.textContent || '').replace(/\s+/g, '').trim();
+      if (!text) continue;
+      var score = 0;
+      if (text === '视频' || text === '上传视频') score -= 3000;
+      else if (text.includes('视频')) score -= 1000;
+      else continue;
+      if (text.includes('讲解') || text.includes('详情') || text.includes('SKU')) score += 5000;
+      var rect = el.getBoundingClientRect();
+      score += Math.max(0, rect.top) + Math.max(0, rect.left) / 1000 + text.length;
+      if (!best || score < best.score) best = { el: el, score: score };
+    }
+
+    if (!best) return Promise.resolve();
+    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return delay(600);
+  }
+
   function findDetailImageFileInput() {
     var tracked = document.querySelector('input[data-tracking-click-viewid="detail_img_localfile_upload"]');
     if (tracked) return tracked;
@@ -317,8 +403,8 @@
     return best && best.el;
   }
 
-  function waitForVideoUploadComplete(labels, delay) {
-    var area = findUploadAreaNearText(labels) || document.body;
+  function waitForVideoUploadComplete(labels, delay, areaFinder) {
+    var area = areaFinder ? (areaFinder() || document.body) : (findUploadAreaNearText(labels) || document.body);
     var start = Date.now();
     var maxWait = 45000;
     var interval = 1500;
@@ -326,6 +412,7 @@
     return new Promise(function (resolve) {
       function check() {
         var elapsed = Date.now() - start;
+        if (areaFinder) area = areaFinder() || area || document.body;
         var text = area.innerText || area.textContent || '';
         var hasFailure = /上传失败|重新上传|上传错误|失败/.test(text);
         var hasLoading = !!(
@@ -466,16 +553,19 @@
       return Promise.resolve(false);
     }
 
-    var fileInput = findFileInputNearText(labels, 'video');
-    if (!fileInput) {
-      if (Toast) Toast.show('未找到' + labelText + '上传入口', 'warning', 4000);
-      console.warn('[PDD填充插件] 未找到' + labelText + ' file input');
-      return Promise.resolve(false);
-    }
-
     var url = cleanImageUrl(rawUrl);
-    if (Toast) Toast.show('正在获取' + labelText + '...', 'info', 3000);
-    return fetchImageDirect(url).then(function (result) {
+    var prepareInput = options.prepareInput ? options.prepareInput(options) : Promise.resolve();
+
+    return prepareInput.then(function () {
+      var fileInput = options.fileInputFinder ? options.fileInputFinder() : findFileInputNearText(labels, 'video');
+      if (!fileInput) {
+        if (Toast) Toast.show('未找到' + labelText + '上传入口', 'warning', 4000);
+        console.warn('[PDD填充插件] 未找到' + labelText + ' file input');
+        return false;
+      }
+
+      if (Toast) Toast.show('正在获取' + labelText + '...', 'info', 3000);
+      return fetchImageDirect(url).then(function (result) {
       if (!result) {
         if (Toast) Toast.show(labelText + '获取失败', 'warning', 4000);
         console.warn('[PDD填充插件] ' + labelText + '获取失败: ' + url);
@@ -524,7 +614,7 @@
         fileInput.dispatchEvent(new Event('input', { bubbles: true }));
         console.log('[PDD填充插件] 已触发' + labelText + '上传: ' + fileName + ', ' + (file.size / 1024 / 1024).toFixed(2) + 'MB, type=' + source.mimeType);
         if (Toast) Toast.show(labelText + '上传中...', 'info', 6000);
-        return waitForVideoUploadComplete(labels, delay).then(function (ok) {
+        return waitForVideoUploadComplete(labels, delay, options.areaFinder).then(function (ok) {
           if (ok) {
             if (Toast) Toast.show(labelText + '上传完成', 'success', 4000);
           } else {
@@ -532,6 +622,7 @@
           }
           return ok;
         });
+      });
       });
     });
   }
@@ -1114,6 +1205,8 @@
     findImageFileInput: findImageFileInput,
     findPrefillMainImageFileInput: findPrefillMainImageFileInput,
     findPrefillMainImageArea: findPrefillMainImageArea,
+    findMainVideoFileInput: findMainVideoFileInput,
+    activateMainVideoUploadTab: activateMainVideoUploadTab,
     findDetailImageFileInput: findDetailImageFileInput,
     findFileInputNearText: findFileInputNearText,
     uploadVideo: uploadVideo,
