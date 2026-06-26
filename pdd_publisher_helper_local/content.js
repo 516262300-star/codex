@@ -1004,12 +1004,22 @@
   function currentMallInfo() {
     try {
       var raw = localStorage.getItem('new_userinfo');
+      if (!raw) {
+        for (var i = 0; i < localStorage.length; i += 1) {
+          var key = localStorage.key(i);
+          var value = key ? localStorage.getItem(key) : '';
+          if (value && value.indexOf('mall_id') >= 0) {
+            raw = value;
+            break;
+          }
+        }
+      }
       if (!raw) return {};
       var info = JSON.parse(raw);
       var mall = info && info.mall ? info.mall : {};
       return {
         mall_id: mall.mall_id || info.mall_id || '',
-        mall_name: mall.mall_name || ''
+        mall_name: mall.mall_name || info.mall_name || ''
       };
     } catch (_) {
       return {};

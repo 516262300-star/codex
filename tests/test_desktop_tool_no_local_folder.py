@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 
 import desktop_tool
@@ -197,6 +198,66 @@ def test_append_saved_draft_history_appends_and_deduplicates(tmp_path, monkeypat
     assert history["items"][0]["mall_name"] == "测试店铺"
     assert history["items"][0]["task_id"] == "123"
     assert history["items"][0]["goods_id"] == "abc"
+    assert history["items"][0]["record_key"] == "mall-1:abc"
+
+
+def test_read_saved_draft_history_backfills_goods_id_and_record_key(tmp_path, monkeypatch):
+    history_path = tmp_path / "saved_draft_history.json"
+    monkeypatch.setattr(desktop_tool, "DRAFT_HISTORY_PATH", history_path)
+    history_path.write_text(
+        json.dumps({
+            "version": 1,
+            "items": [
+                {
+                    "saved_at": "2026-06-17 15:30:00",
+                    "mall_id": "mall-2",
+                    "url": "https://mms.pinduoduo.com/goods/goods_add/index?goods_id=goods-2",
+                }
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    history = desktop_tool.read_saved_draft_history()
+
+    assert history["items"][0]["goods_id"] == "goods-2"
+    assert history["items"][0]["record_key"] == "mall-2:goods-2"
+
+
+def test_append_saved_draft_history_deduplicates_by_mall_and_goods(tmp_path, monkeypatch):
+    history_path = tmp_path / "saved_draft_history.json"
+    monkeypatch.setattr(desktop_tool, "DRAFT_HISTORY_PATH", history_path)
+
+    desktop_tool.append_saved_draft_history(
+        {"id": "first-task"},
+        {
+            "stage": "draft_saved",
+            "updated_at": "2026-06-17 15:30:00",
+            "detail": {
+                "title": "旧标题",
+                "mall_id": "mall-1",
+                "goods_id": "goods-1",
+            },
+        },
+    )
+    desktop_tool.append_saved_draft_history(
+        {"id": "second-task"},
+        {
+            "stage": "draft_saved",
+            "updated_at": "2026-06-17 15:35:00",
+            "detail": {
+                "title": "新标题",
+                "mall_id": "mall-1",
+                "goods_id": "goods-1",
+            },
+        },
+    )
+
+    history = desktop_tool.read_saved_draft_history()
+    assert history["total"] == 1
+    assert history["items"][0]["task_id"] == "second-task"
+    assert history["items"][0]["title"] == "新标题"
+    assert history["items"][0]["record_key"] == "mall-1:goods-1"
 
 
 def test_enrich_latest_saved_draft_backfills_success_url(tmp_path, monkeypatch):

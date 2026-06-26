@@ -1086,6 +1086,14 @@ def read_saved_draft_history() -> dict[str, Any]:
     items = data.get("items")
     if not isinstance(items, list):
         items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("goods_id") and item.get("url"):
+            item["goods_id"] = parse_goods_id_from_url(str(item.get("url") or ""))
+        record_key = draft_record_key(str(item.get("mall_id") or ""), str(item.get("goods_id") or ""))
+        if record_key and not item.get("record_key"):
+            item["record_key"] = record_key
     data["items"] = items
     data["total"] = len(items)
     data["version"] = int(data.get("version") or 1)
@@ -1109,20 +1117,31 @@ def parse_goods_id_from_url(url: str) -> str:
         return ""
 
 
+def draft_record_key(mall_id: str, goods_id: str) -> str:
+    mall_id = str(mall_id or "").strip()
+    goods_id = str(goods_id or "").strip()
+    if mall_id and goods_id:
+        return f"{mall_id}:{goods_id}"
+    return ""
+
+
 def append_saved_draft_history(status: dict[str, Any], progress: dict[str, Any]) -> dict[str, Any] | None:
     if progress.get("stage") != "draft_saved":
         return None
     detail = progress.get("detail") if isinstance(progress.get("detail"), dict) else {}
     task_id = str(status.get("id") or "")
     url = str(progress.get("url") or detail.get("url") or "")
+    mall_id = str(detail.get("mall_id") or "")
+    goods_id = str(detail.get("goods_id") or parse_goods_id_from_url(url))
     entry = {
         "saved_at": progress.get("updated_at") or time.strftime("%Y-%m-%d %H:%M:%S"),
         "task_id": task_id,
         "title": str(detail.get("title") or ""),
         "mall_name": str(detail.get("mall_name") or ""),
-        "mall_id": str(detail.get("mall_id") or ""),
+        "mall_id": mall_id,
         "url": url,
-        "goods_id": str(detail.get("goods_id") or parse_goods_id_from_url(url)),
+        "goods_id": goods_id,
+        "record_key": draft_record_key(mall_id, goods_id),
         "product_folder": str(detail.get("product_folder") or ""),
         "material_path": str(detail.get("material_path") or ""),
         "erp_model": str(detail.get("erp_model") or ""),
@@ -1137,6 +1156,10 @@ def append_saved_draft_history(status: dict[str, Any], progress: dict[str, Any])
     items = history.get("items") or []
     for item in items:
         if task_id and str(item.get("task_id") or "") == task_id:
+            item.update(entry)
+            write_saved_draft_history(history)
+            return entry
+        if entry["record_key"] and str(item.get("record_key") or draft_record_key(item.get("mall_id", ""), item.get("goods_id", ""))) == entry["record_key"]:
             item.update(entry)
             write_saved_draft_history(history)
             return entry
@@ -1167,6 +1190,10 @@ def enrich_latest_saved_draft(progress: dict[str, Any]) -> None:
         changed = True
     if goods_id and not latest.get("goods_id"):
         latest["goods_id"] = goods_id
+        changed = True
+    record_key = draft_record_key(str(latest.get("mall_id") or ""), str(latest.get("goods_id") or ""))
+    if record_key and latest.get("record_key") != record_key:
+        latest["record_key"] = record_key
         changed = True
     if changed:
         write_saved_draft_history(history)
@@ -1465,6 +1492,8 @@ HTML = r"""<!doctype html>
     .progress-dot.error { background: #e02e24; box-shadow: 0 0 0 4px rgba(224, 46, 36, .12); }
     .progress-message { color: #344054; }
     .progress-meta { color: var(--muted); margin-top: 4px; word-break: break-all; }
+    .draft-history-row { margin-top: 4px; }
+    .draft-history-ids { color: #334155; font-family: Consolas, monospace; }
     a { color: #0b61a4; word-break: break-all; }
   </style>
 </head>
@@ -1597,7 +1626,15 @@ HTML = r"""<!doctype html>
       }
       const rows = recent.map(item => {
         const link = item.url ? `<a href="${escapeHTML(item.url)}" target="_blank">链接</a>` : "";
-        return `<div>${escapeHTML(item.saved_at || "")}｜${escapeHTML(item.mall_name || "未知店铺")}｜${escapeHTML(item.title || "未记录标题")} ${link}</div>`;
+        const mallName = item.mall_name || "未知店铺";
+        const mallId = item.mall_id || "未记录店铺ID";
+        const goodsId = item.goods_id || "未记录商品ID";
+        const recordKey = item.record_key || ((item.mall_id && item.goods_id) ? `${item.mall_id}:${item.goods_id}` : "");
+        const title = item.title || "未记录标题";
+        return `<div class="draft-history-row">
+          <div>${escapeHTML(item.saved_at || "")}｜${escapeHTML(mallName)}｜${escapeHTML(title)} ${link}</div>
+          <div class="draft-history-ids">店铺ID：${escapeHTML(mallId)}｜商品ID：${escapeHTML(goodsId)}${recordKey ? `｜记录：${escapeHTML(recordKey)}` : ""}</div>
+        </div>`;
       }).join("");
       draftHistory.innerHTML = `<div>累计保存草稿：${total} 条</div>${rows}`;
     }
