@@ -582,9 +582,56 @@
 
   function handleCategoryFill(productData, fissionConfig) {
     Logger.info('===== 类目页填充流程开始 =====');
-    reportWorkbenchProgress('category_start', '已收到任务，正在发布新商品页选择类目');
+    reportWorkbenchProgress('category_waiting', '已收到任务，正在等待发布前信息页加载完成');
+    return waitForStableCategoryVariant(20000).then(function (variant) {
+      if (variant === 'unknown') {
+        var message = '发布前信息页在 20 秒内未加载完成，未执行类目选择';
+        Logger.error(message);
+        reportWorkbenchProgress('error', message);
+        Toast.show(message, 'error', 8000);
+        chrome.runtime.sendMessage({
+          type: 'CATEGORY_FILL_COMPLETE',
+          success: false,
+          error: message
+        });
+        return false;
+      }
+      return executeCategoryFill(productData, fissionConfig, variant);
+    });
+  }
 
-    var variant = CategoryHandler.detectPageVariant();
+  function waitForStableCategoryVariant(maxWait) {
+    var startedAt = Date.now();
+    var lastVariant = '';
+    var stableSamples = 0;
+    maxWait = maxWait || 20000;
+
+    return new Promise(function (resolve) {
+      function sample() {
+        var variant = CategoryHandler.detectPageVariant();
+        if (variant !== 'unknown' && variant === lastVariant) {
+          stableSamples += 1;
+        } else {
+          lastVariant = variant;
+          stableSamples = variant === 'unknown' ? 0 : 1;
+        }
+        if (variant !== 'unknown' && stableSamples >= 2) {
+          resolve(variant);
+          return;
+        }
+        if (Date.now() - startedAt >= maxWait) {
+          resolve('unknown');
+          return;
+        }
+        setTimeout(sample, 400);
+      }
+      sample();
+    });
+  }
+
+  function executeCategoryFill(productData, fissionConfig, variant) {
+    reportWorkbenchProgress('category_start', '发布前信息页已稳定，开始按主图、标题、类目顺序处理');
+
     Logger.info('检测到类目页变体:', variant);
     reportWorkbenchProgress('category_detected', '已识别类目页，准备选择明装小拉手', { variant: variant });
 
@@ -1551,8 +1598,17 @@
           busy = true;
           var productData = JSON.parse(item.json_data || '{}');
           reportWorkbenchProgress('task_claiming', '前台发布页发现待上架任务，正在接收任务');
-          return claimTask(item)
-            .then(function () { return runProductData(productData); })
+          var readyPromise = PAGE_TYPE === 'category'
+            ? waitForStableCategoryVariant(20000)
+            : Promise.resolve(PAGE_TYPE);
+          return readyPromise.then(function (variant) {
+            if (PAGE_TYPE === 'category' && variant === 'unknown') {
+              reportWorkbenchProgress('category_waiting', '发布前信息页尚未加载完成，本次不领取任务，稍后重试');
+              Logger.warn('发布前信息页未稳定，保留任务等待下一轮');
+              return false;
+            }
+            return claimTask(item).then(function () { return runProductData(productData); });
+          })
             .finally(function () { busy = false; });
         })
         .catch(function (err) {

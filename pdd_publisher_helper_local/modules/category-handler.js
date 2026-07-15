@@ -932,12 +932,14 @@
       return 'v4';
     }
     // v2: 传统类目树
-    if (document.querySelector('.item-group-container-v2') || document.querySelector('.staple-category-container')) {
+    var v2Tree = document.querySelector('.item-group-container-v2') || document.querySelector('.staple-category-container');
+    if (v2Tree && isElementVisible(v2Tree)) {
       log('检测到 v2 类目树页面');
       return 'v2';
     }
     // v3: AI分类识别（ImageSearchPanel + 第2步 "选择商品分类"）
-    if (document.querySelector('[class*="ImageSearchPanel"]') || document.querySelector('.cate-container-v3')) {
+    var v3Panel = document.querySelector('[class*="ImageSearchPanel"]') || document.querySelector('.cate-container-v3');
+    if (v3Panel && isElementVisible(v3Panel)) {
       log('检测到 v3 AI分类页面');
       return 'v3';
     }
