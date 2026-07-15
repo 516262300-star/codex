@@ -3,7 +3,7 @@ default_category: "基础建材 > 家用五金 > 拉手 > 明装小拉手"
 categories:
   "基础建材 > 家用五金 > 拉手 > 明装小拉手":
     pdd_category_id: "193332148218"
-    title_template: "{erp_model} 柜门抽屉明装小拉手 {material} 单孔拉手"
+    title_template: "{erp_model} 柜门抽屉明装小拉手 {material} 柜子把手"
     attributes:
       材质: "{material}"
       拉手类型: "明装拉手"
@@ -12,7 +12,6 @@ categories:
         - "柜门"
       风格: "中古风"
       外形: "球形"
-      孔距: "单孔"
       表面工艺: "拉丝"
       安装方式: "打孔"
       产地: "中国大陆"
@@ -24,3 +23,13 @@ categories:
       承诺发货时间: "48小时发货及揽收"
       运费模板: "新疆西藏收费默认模板"
       拼单人数: 2
+    service_options:
+      - name: "假一赔十"
+        type: "checkbox"
+        checked: true
+      - name: "正品发票"
+        type: "checkbox"
+        checked: true
+      - name: "开票方式"
+        type: "select"
+        value: "每申请单必开"

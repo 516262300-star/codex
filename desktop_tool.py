@@ -532,6 +532,76 @@ def summarize_sku_models(sku_rows: list[dict[str, Any]], fallback: str) -> str:
     return f"{models[0]}-{models[-1]}"
 
 
+def infer_hole_distance_from_skus(sku_rows: list[dict[str, Any]]) -> str:
+    """从尺寸图生成的 SKU 判断孔距，绝不把模板默认值当成识别结果。"""
+    texts = [
+        " ".join(
+            str(row.get(key) or "")
+            for key in (
+                "sku_name",
+                "price_book_name",
+                "spec_name",
+                "material_image_filename",
+                "image",
+            )
+        )
+        for row in sku_rows
+    ]
+    has_single_hole = any("单孔" in text for text in texts)
+
+    distances: list[int] = []
+    for row, text in zip(sku_rows, texts):
+        price_book_name = str(row.get("price_book_name") or row.get("price_lookup_name") or "")
+        matches = re.findall(r"-(\d+)(?:mm|MM|孔距|尺寸图|尺寸)?(?:\D|$)", price_book_name)
+        if not matches:
+            matches = re.findall(r"(?:^|[-_#\s])([1-9]\d{1,3})(?:mm|MM|孔距|尺寸图|尺寸)(?:\D|$)", text)
+        for value in matches:
+            distance = int(value)
+            if distance not in distances:
+                distances.append(distance)
+
+    distances.sort()
+    values = (["单孔"] if has_single_hole else []) + [f"{distance}mm" for distance in distances]
+    return "/".join(values)
+
+
+def apply_sku_derived_attributes(listing: dict[str, Any], sku_rows: list[dict[str, Any]]) -> str:
+    attributes = dict(listing.get("attributes") or {})
+    hole_distance = infer_hole_distance_from_skus(sku_rows)
+    if hole_distance:
+        attributes["孔距"] = hole_distance
+    else:
+        attributes.pop("孔距", None)
+    listing["attributes"] = attributes
+    return hole_distance
+
+
+def choose_listing_videos(video_items: list[dict[str, Any]]) -> tuple[dict[str, Any] | str, dict[str, Any] | str, list[dict[str, Any]]]:
+    if not video_items:
+        return "", "", []
+
+    def is_explain(item: dict[str, Any]) -> bool:
+        name = str(item.get("filename") or item.get("name") or "").lower()
+        return bool(re.search(r"(?:^|\D)9\s*[-_:x×]\s*16(?:\D|$)|讲解|竖屏", name))
+
+    product = next((item for item in video_items if not is_explain(item)), video_items[0])
+    explain = next((item for item in video_items if is_explain(item)), None)
+    if explain is None:
+        explain = next((item for item in video_items if item is not product), product)
+
+    ordered = [product]
+    ordered.extend(item for item in video_items if item is not product)
+    return product, explain, ordered
+
+
+def listing_reference_price(sku_specs: list[dict[str, Any]]) -> Decimal:
+    highest_single_price = max(
+        (Decimal(str(spec.get("single_price") or "0")) for spec in sku_specs),
+        default=Decimal("0"),
+    )
+    return money(highest_single_price + Decimal("1")) if highest_single_price else Decimal("0")
+
+
 async def material_sku_rows_from_image_space(
     material_sku: list[dict[str, Any]],
     meta: ProductMeta,
@@ -635,6 +705,7 @@ async def upload_plan_payload(
     if title_template:
         listing["title_template"] = re.sub(r"\b\d+[A-Za-z]*(?:-\d+[A-Za-z]*)?\b", package_erp_model, title_template, count=1)
     sku_specs = build_sku_specs(sku_rows, erp_model=package_erp_model)
+    hole_distance = apply_sku_derived_attributes(listing, sku_specs)
     package = {
         "product_folder": dry["product_folder"],
         "material_path": material_path,
@@ -678,6 +749,7 @@ async def upload_plan_payload(
             for index, image in enumerate(detail_images, start=1)
         ],
         "sku_specs": sku_specs,
+        "derived_attributes": {"孔距": hole_distance} if hole_distance else {},
         "checks": {
             "main_image_count": len(main_images),
             "main_video_count": len(main_videos),
@@ -1275,8 +1347,7 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         for index, item in enumerate(package.get("main_videos") or [], start=1)
         if item.get("url")
     ]
-    product_video = main_video_items[0] if main_video_items else ""
-    explain_video = main_video_items[1] if len(main_video_items) > 1 else product_video
+    product_video, explain_video, main_video_items = choose_listing_videos(main_video_items)
     if not product_video and main_image_urls:
         product_video = {
             "url": main_image_urls[0],
@@ -1289,6 +1360,7 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
             "makeVideoFromImage": True,
         }
     sku_specs = list(package.get("sku_specs") or [])
+    apply_sku_derived_attributes(listing, sku_specs)
     skus = [
         {
             "specs": [{"key": str(spec.get("spec_type") or "型号"), "value": str(spec.get("spec_name") or "")}],
@@ -1313,6 +1385,7 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
         "productVideo": product_video,
         "explainVideo": explain_video,
         "attributes": listing_attributes_array(dict(listing.get("attributes") or {})),
+        "serviceOptions": list(listing.get("service_options") or []),
         "skuAxes": [
             {
                 "typeName": "型号",
@@ -1320,7 +1393,7 @@ def plugin_product_json(package: dict[str, Any]) -> dict[str, Any]:
             }
         ],
         "skus": skus,
-        "marketPrice": max((Decimal(str(spec.get("single_price") or "0")) for spec in sku_specs), default=Decimal("0")),
+        "marketPrice": listing_reference_price(sku_specs),
         "batchDiscount": "9.9",
         "productCode": str(package.get("price_multiplier") or meta.price_multiplier),
         "_source": {

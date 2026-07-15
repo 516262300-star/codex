@@ -923,8 +923,11 @@
    */
   function detectPageVariant() {
     var bodyText = document.body && (document.body.innerText || document.body.textContent || '');
-    if (bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') &&
-        (bodyText.includes('下一步') || bodyText.includes('完善商品信息'))) {
+    var hasTitleInput = !!document.querySelector('#goodsNameId input, #goods_name input, input[placeholder*="商品标题"], input[placeholder*="商品描述"]');
+    var hasMainImageArea = !!document.querySelector('#goodsCarousel, #goodsCarouselId, [data-tracking-viewid="el_upload_wheel_chart"]');
+    var hasNextStep = bodyText && (bodyText.includes('下一步') || bodyText.includes('完善商品信息'));
+    if ((bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') && hasNextStep) ||
+        (hasTitleInput && hasMainImageArea && hasNextStep)) {
       log('检测到 v4 发布前信息页');
       return 'v4';
     }
@@ -1016,8 +1019,10 @@
       }
     }
     return {
-      isPrefill: !!(body && body.includes('商品主图') && body.includes('商品标题') &&
-        (body.includes('下一步') || body.includes('完善商品信息'))),
+      isPrefill: !!((body && body.includes('商品主图') && body.includes('商品标题') &&
+        (body.includes('下一步') || body.includes('完善商品信息'))) ||
+        (titleInput && (document.querySelector('#goodsCarousel') || document.querySelector('#goodsCarouselId')) &&
+         body && (body.includes('下一步') || body.includes('完善商品信息')))),
       imageCount: imageCount,
       title: titleInput ? (titleInput.value || '').trim() : ''
     };

@@ -312,7 +312,7 @@
     });
   }
 
-  function clickBestVisibleText(container, targetText, options) {
+  function findBestVisibleTextElement(container, targetText, options) {
     options = options || {};
     var exact = options.exact !== false;
     var modalRect = container.getBoundingClientRect();
@@ -331,8 +331,13 @@
       var score = text.length + rect.width / 100 + rect.height / 100 + Math.max(0, rect.top - modalRect.top) / 1000;
       if (!best || score < best.score) best = { el: el, score: score };
     }
-    if (!best) return false;
-    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return best && best.el;
+  }
+
+  function clickBestVisibleText(container, targetText, options) {
+    var el = findBestVisibleTextElement(container, targetText, options);
+    if (!el) return false;
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     return true;
   }
 
@@ -386,6 +391,40 @@
     return delay(500).then(function () { return true; });
   }
 
+  function clickMaterialPickerTrigger(labels, delay) {
+    var area = findUploadAreaNearText(labels) || document.body;
+    var controls = Array.prototype.slice.call(area.querySelectorAll('button, [role="button"], div, span, a'));
+    var best = null;
+    for (var i = 0; i < controls.length; i++) {
+      var el = controls[i];
+      if (!isElementVisible(el)) continue;
+      var text = normalizeText(el.innerText || el.textContent || '');
+      var score = null;
+      if (text === '图片空间上传' || text === '从图片空间选择' || text === '图片空间选择') score = 0;
+      else if (text.includes('图片空间') && (text.includes('上传') || text.includes('选择'))) score = 500;
+      if (score === null) continue;
+      if (text.includes('本地上传')) score += 5000;
+      var rect = el.getBoundingClientRect();
+      score += text.length + Math.max(0, rect.top) + Math.max(0, rect.left) / 1000;
+      if (!best || score < best.score) best = { el: el, score: score };
+    }
+    if (!best && area !== document.body) {
+      controls = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], div, span, a'));
+      for (var j = 0; j < controls.length; j++) {
+        var candidate = controls[j];
+        if (!isElementVisible(candidate)) continue;
+        var candidateText = normalizeText(candidate.innerText || candidate.textContent || '');
+        if (candidateText === '图片空间上传' || candidateText === '从图片空间选择' || candidateText === '图片空间选择') {
+          best = { el: candidate, score: 0 };
+          break;
+        }
+      }
+    }
+    if (!best) return Promise.resolve(false);
+    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return delay(700).then(function () { return true; });
+  }
+
   function navigateMaterialPathInDialog(modal, materialPath, delay) {
     var parts = String(materialPath || '').split(/[\\/]+/).filter(Boolean);
     if (!parts.length) return Promise.resolve(true);
@@ -407,8 +446,25 @@
     var stem = name.replace(/\.[a-z0-9]+$/i, '');
     var probes = [name, stem, stem.slice(0, 12), stem.slice(0, 8)].filter(function (x) { return normalizeText(x).length >= 2; });
     for (var i = 0; i < probes.length; i++) {
-      if (clickBestVisibleText(refreshed, probes[i], { exact: false, rightOnly: true })) {
-        return delay(500).then(function () { return true; });
+      var matched = findBestVisibleTextElement(refreshed, probes[i], { exact: false, rightOnly: true });
+      if (matched) {
+        var clickTarget = matched;
+        var current = matched;
+        for (var depth = 0; current && depth < 6; depth++, current = current.parentElement) {
+          var checkbox = current.querySelector && current.querySelector('input[type="checkbox"], [role="checkbox"]');
+          if (checkbox) {
+            clickTarget = checkbox.closest('label') || checkbox;
+            break;
+          }
+          var box = current.getBoundingClientRect();
+          if (box.width >= 80 && box.height >= 100 && box.width <= 260 && box.height <= 320) clickTarget = current;
+        }
+        clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        return delay(500).then(function () {
+          var latest = findMaterialVideoDialog() || refreshed;
+          var selectedMatch = normalizeText(latest.innerText || latest.textContent || '').match(/已选(\d+)张/);
+          return !selectedMatch || Number(selectedMatch[1]) > 0;
+        });
       }
     }
 
@@ -468,6 +524,11 @@
       : clickVideoTriggerNearText(labels, delay);
 
     return triggerPromise
+      .then(function () { return delay(700); })
+      .then(function () {
+        if (findMaterialVideoDialog()) return true;
+        return clickMaterialPickerTrigger(labels, delay);
+      })
       .then(function () { return waitForMaterialVideoDialog(delay, 12000); })
       .then(function (modal) {
         if (!modal) {

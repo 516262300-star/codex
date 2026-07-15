@@ -97,6 +97,57 @@ def test_material_video_detection_falls_back_to_filename_suffix():
     assert desktop_tool.is_material_video({"filename": "讲解视频.MOV"})
 
 
+def test_hole_distance_is_derived_from_size_skus_instead_of_template_default():
+    rows = [
+        {"price_book_name": "8264-96", "sku_name": "8264-96铜本色"},
+        {"price_book_name": "8264-128", "sku_name": "8264-128古铜色"},
+    ]
+
+    listing = {"attributes": {"孔距": "单孔", "材质": "锌合金"}}
+
+    assert desktop_tool.apply_sku_derived_attributes(listing, rows) == "96mm/128mm"
+    assert listing["attributes"]["孔距"] == "96mm/128mm"
+
+
+def test_hole_distance_keeps_single_hole_only_when_size_skus_contain_it():
+    assert desktop_tool.infer_hole_distance_from_skus([
+        {"sku_name": "2718-亮金-单孔", "price_book_name": "2718-单孔"},
+    ]) == "单孔"
+
+
+def test_hole_distance_can_include_single_and_multiple_numeric_distances():
+    assert desktop_tool.infer_hole_distance_from_skus([
+        {"sku_name": "8256-金-单孔", "price_book_name": "8256-单孔"},
+        {"sku_name": "8256-金-96尺寸图", "price_book_name": "8256-96"},
+    ]) == "单孔/96mm"
+
+
+def test_hole_distance_is_omitted_when_skus_do_not_identify_it():
+    listing = {"attributes": {"孔距": "单孔"}}
+
+    assert desktop_tool.apply_sku_derived_attributes(listing, [{"sku_name": "8105-古铜色"}]) == ""
+    assert "孔距" not in listing["attributes"]
+
+
+def test_listing_videos_use_square_video_for_product_and_vertical_for_explanation():
+    vertical = {"filename": "9-16.mp4", "url": "vertical"}
+    square = {"filename": "800视频.mp4", "url": "square"}
+
+    product, explain, ordered = desktop_tool.choose_listing_videos([vertical, square])
+
+    assert product == square
+    assert explain == vertical
+    assert ordered == [square, vertical]
+
+
+def test_listing_reference_price_is_one_yuan_above_highest_single_price():
+    assert desktop_tool.listing_reference_price([
+        {"single_price": "9.79"},
+        {"single_price": "10.59"},
+        {"single_price": "10.09"},
+    ]) == Decimal("11.59")
+
+
 def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     package = {
         "product_folder": str(tmp_path / "missing-product-folder"),
@@ -146,7 +197,12 @@ def test_plugin_product_json_works_without_local_meta(tmp_path, monkeypatch):
     assert data["productVideo"] == data["mainVideos"][0]
     assert data["explainVideo"] == data["mainVideos"][0]
     assert data["skus"][0]["productCode"] == "8105#古铜色"
-    assert data["marketPrice"] == Decimal("19.00")
+    assert data["marketPrice"] == Decimal("20.00")
+    assert data["serviceOptions"] == [
+        {"name": "假一赔十", "type": "checkbox", "checked": True},
+        {"name": "正品发票", "type": "checkbox", "checked": True},
+        {"name": "开票方式", "type": "select", "value": "每申请单必开"},
+    ]
     assert data["batchDiscount"] == "9.9"
     assert data["productCode"] == "1.8"
 

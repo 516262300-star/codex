@@ -13,11 +13,15 @@
   function detectPageType() {
     var url = window.location.href;
     var bodyText = document.body && (document.body.innerText || document.body.textContent || '');
+    var hasPrefillTitle = !!document.querySelector('#goodsNameId input, #goods_name input, input[placeholder*="商品标题"], input[placeholder*="商品描述"]');
+    var hasPrefillImages = !!document.querySelector('#goodsCarousel, #goodsCarouselId, [data-tracking-viewid="el_upload_wheel_chart"]');
+    var hasPrefillNext = bodyText && (bodyText.includes('下一步') || bodyText.includes('完善商品信息'));
+    // 部分店铺的发布前信息页沿用详情页 URL，必须优先按页面结构识别。
+    if ((bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') && hasPrefillNext) ||
+        (hasPrefillTitle && hasPrefillImages && hasPrefillNext)) return 'category';
     if (url.includes('/goods/goods_add/index')) return 'detail';
     if (url.includes('/goods/category')) return 'category';
     if (url.includes('/publish/new') || url.includes('/publish/edit')) return 'detail';
-    if (bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') &&
-        (bodyText.includes('下一步') || bodyText.includes('完善商品信息'))) return 'category';
     if (bodyText && (bodyText.includes('选择商品分类') || bodyText.includes('商品分类')) &&
         (bodyText.includes('下一步') || bodyText.includes('确认'))) return 'category';
     if (bodyText && (bodyText.includes('商品视频') || bodyText.includes('商品讲解视频') ||
@@ -277,6 +281,122 @@
   function fillTitle(title) {
     MainModule.fillTitle(title);
     return Promise.resolve(true);
+  }
+
+  function normalizePageText(value) {
+    return String(value || '').replace(/\s+/g, '').trim();
+  }
+
+  function isVisibleElement(el) {
+    if (!el) return false;
+    var style = window.getComputedStyle(el);
+    var rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  }
+
+  function findSmallestTextElement(name) {
+    var target = normalizePageText(name);
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('label, span, div, p'));
+    var best = null;
+    nodes.forEach(function (el) {
+      if (!isVisibleElement(el)) return;
+      var text = normalizePageText(el.innerText || el.textContent || '');
+      if (text !== target && text.indexOf(target) < 0) return;
+      var rect = el.getBoundingClientRect();
+      var score = (text === target ? 0 : 10000) + text.length * 10 + rect.width * rect.height / 1000;
+      if (!best || score < best.score) best = { el: el, score: score };
+    });
+    return best && best.el;
+  }
+
+  function choiceIsChecked(control) {
+    if (!control) return false;
+    if (typeof control.checked === 'boolean') return control.checked;
+    if (control.getAttribute('aria-checked') === 'true') return true;
+    return /checked|selected|active/i.test(control.className || '');
+  }
+
+  function findChoiceControl(name) {
+    var label = findSmallestTextElement(name);
+    if (!label) return null;
+    var current = label;
+    for (var depth = 0; current && depth < 7; depth++, current = current.parentElement) {
+      var control = current.matches && current.matches('input[type="checkbox"], [role="checkbox"]') ? current :
+        current.querySelector && current.querySelector('input[type="checkbox"], [role="checkbox"]');
+      if (control) return { control: control, clickTarget: control.closest('label') || control };
+      if (current.tagName === 'LABEL') return { control: current, clickTarget: current };
+    }
+    return null;
+  }
+
+  function ensureCheckboxSelected(name) {
+    var found = findChoiceControl(name);
+    if (!found) {
+      Logger.warn('未找到服务复选项:', name);
+      return Promise.resolve(false);
+    }
+    if (choiceIsChecked(found.control)) return Promise.resolve(true);
+    found.clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    found.clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    found.clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return Utils.delay(500).then(function () {
+      var refreshed = findChoiceControl(name);
+      return !!(refreshed && choiceIsChecked(refreshed.control));
+    });
+  }
+
+  function fillNamedSelect(name, value) {
+    var propertyMap = MainModule.buildPropertyMap();
+    var match = MainModule.findPropertyEl(name, propertyMap);
+    if (!match) {
+      var label = findSmallestTextElement(name);
+      var current = label;
+      for (var depth = 0; current && depth < 7 && !match; depth++, current = current.parentElement) {
+        if (current.querySelector && current.querySelector('[data-testid="beast-core-select"]')) match = { el: current };
+      }
+    }
+    if (!match) {
+      var directOption = findSmallestTextElement(value);
+      if (!directOption) return Promise.resolve(false);
+      directOption.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return Utils.delay(500).then(function () { return true; });
+    }
+    var control = SelectHandler.detectControlType(match.el);
+    if (control.type !== 'select' && control.type !== 'multi-select') {
+      var option = findSmallestTextElement(value);
+      if (!option) return Promise.resolve(false);
+      option.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return Utils.delay(500).then(function () { return true; });
+    }
+    return control.type === 'multi-select'
+      ? SelectHandler.fillMultiSelect(control, value, getSelectOptions())
+      : SelectHandler.fillSelect(control, value, getSelectOptions());
+  }
+
+  function fillServiceOptions(options) {
+    if (!Array.isArray(options) || !options.length) return Promise.resolve(true);
+    var results = [];
+    return options.reduce(function (chain, option) {
+      return chain.then(function () {
+        if (!option || !option.name) return;
+        if (option.type === 'checkbox' && option.checked !== false) {
+          return ensureCheckboxSelected(option.name).then(function (ok) {
+            results.push({ name: option.name, ok: !!ok });
+            return Utils.delay(500);
+          });
+        }
+        if (option.type === 'select' && option.value) {
+          return fillNamedSelect(option.name, option.value).then(function (ok) {
+            results.push({ name: option.name, ok: !!ok });
+            return Utils.delay(500);
+          });
+        }
+      });
+    }, Promise.resolve()).then(function () {
+      var failed = results.filter(function (item) { return !item.ok; });
+      if (failed.length) Logger.warn('承诺/服务未完全填充:', failed);
+      return failed.length === 0;
+    });
   }
 
   function uploadImages(imageItems, options) {
@@ -780,14 +900,15 @@
       return Promise.resolve();
     });
 
-    // Step 3: 商品视频属于主图区域，优先走主图里的视频入口。
+    // Step 3: 商品视频属于主图区域，优先走主图里的图片空间入口。
     steps.push(function () {
-      var mainVideos = collectMainVideoItems(productData);
-      if (!mainVideos.length) return Promise.resolve();
+      var productVideo = productData.productVideo;
+      if (!productVideo) return Promise.resolve();
       reportWorkbenchProgress('detail_main_video', '详情页：正在处理主图视频');
-      return uploadMainVideo(mainVideos[0]).then(function (ok) {
+      return uploadMainVideo(productVideo).then(function (ok) {
         mainVideoUploaded = !!ok;
         stepResults.mainVideo = !!ok;
+        stepResults.productVideo = !!ok;
         reportWorkbenchProgress(ok ? 'detail_main_video_done' : 'detail_main_video_skipped', ok ? '详情页：主图视频已处理' : '详情页：主图视频未处理，请检查主图视频入口');
         return Utils.delay(800);
       });
@@ -796,10 +917,13 @@
     // Step 4: Fill product/explain video fields that are not already handled by main image video.
     steps.push(function () {
       var videoTasks = [];
-      if (productData.productVideo && !mainVideoUploaded && productData.productVideo.makeVideoFromImage) {
+      if (productData.productVideo && !mainVideoUploaded) {
         videoTasks.push(function () {
           reportWorkbenchProgress('detail_product_video', '详情页：正在上传商品视频');
-          return uploadVideo(productData.productVideo, ['商品视频']).then(function (ok) {
+          var productUpload = productData.productVideo.useMaterialPicker && productData.productVideo.materialPath
+            ? ImageHandler.selectVideoFromMaterial(productData.productVideo, ['商品视频', '主图视频'], { Toast: Toast, delay: Utils.delay })
+            : uploadVideo(productData.productVideo, ['商品视频']);
+          return productUpload.then(function (ok) {
             stepResults.productVideo = !!ok;
             reportWorkbenchProgress(ok ? 'detail_product_video_done' : 'detail_product_video_skipped', ok ? '详情页：商品视频已上传' : '详情页：商品视频未上传，请检查入口');
           });
@@ -840,6 +964,17 @@
 
       Logger.info('Step 3: no attributes found, skip attribute fill');
       return Promise.resolve();
+    });
+
+    // Step 5: 勾选承诺/服务，并设置发票开票方式。
+    steps.push(function () {
+      if (!productData.serviceOptions || !productData.serviceOptions.length) return Promise.resolve();
+      reportWorkbenchProgress('detail_services', '详情页：正在填写承诺与服务');
+      return fillServiceOptions(productData.serviceOptions).then(function (ok) {
+        stepResults.services = !!ok;
+        reportWorkbenchProgress(ok ? 'detail_services_done' : 'detail_services_partial', ok ? '详情页：承诺与服务已填写' : '详情页：承诺与服务未完全填写，请检查页面');
+        return Utils.delay(800);
+      });
     });
 
     // Step 4: 填充SKU规格。先创建规格和价格，避免详情图上传等待阻塞SKU
@@ -951,6 +1086,9 @@
       if (existing === 0) missing.push('主图');
     }
     if ((productData.skuAxes || productData.skus) && !stepResults.sku) missing.push('规格和价格');
+    if (productData.productVideo && !stepResults.productVideo) missing.push('商品视频');
+    if (productData.explainVideo && !stepResults.explainVideo) missing.push('商品讲解视频');
+    if (productData.serviceOptions && productData.serviceOptions.length && !stepResults.services) missing.push('承诺和服务');
     if (productData.detailImages && productData.detailImages.length > 0 && !stepResults.detailImages) missing.push('详情图');
     return missing;
   }
