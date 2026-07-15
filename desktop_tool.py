@@ -478,6 +478,10 @@ def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
             if re.search(r"单孔|吊坠", part):
                 continue
             size_match = re.match(r"^(\d+)(?:尺寸图|尺寸|直径|mm|MM)?$", part)
+            if not size_match and known_color:
+                inline_color_match = re.match(r"^(\d+)(?:尺寸图|尺寸|直径|mm|MM)?(.+)$", part)
+                if inline_color_match and extract_price_book_color(inline_color_match.group(2)) == known_color:
+                    size_match = inline_color_match
             if not size_match:
                 size_match = re.search(r"[（(](\d+)(?:尺寸图|尺寸|直径|mm|MM)?[）)]", part)
             if size_match:

@@ -12,6 +12,19 @@ def test_parse_material_sku_lookup_extracts_size_from_descriptive_filename():
     assert color == "古铜色"
 
 
+def test_parse_material_sku_lookup_extracts_size_before_inline_color():
+    cases = [
+        ("8264-96铜本色.jpeg", "8264-96", "铜本色"),
+        ("8264-128古铜色.jpeg", "8264-128", "古铜色"),
+        ("8264-160铬.jpeg", "8264-160", "铬"),
+    ]
+
+    for filename, expected_model, expected_color in cases:
+        lookup_name, color = desktop_tool.parse_material_sku_lookup(filename)
+        assert lookup_name == expected_model
+        assert color == expected_color
+
+
 def test_parse_material_sku_lookup_keeps_single_hole_suffix():
     lookup_name, color = desktop_tool.parse_material_sku_lookup("2715云栖-铬色-单孔")
 
