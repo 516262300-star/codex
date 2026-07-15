@@ -1080,14 +1080,23 @@
     }).then(function (ok) {
       results.category = ok;
       log('类目选择结果:', ok);
+      if (!ok) return false;
       return delay(1500);
-    }).then(function () {
+    }).then(function (categoryOk) {
+      if (categoryOk === false) return false;
       return clickConfirmButton().then(function (ok) {
         results.confirm = ok;
         log('点击确认结果:', ok);
         return delay(500);
       });
-    }).then(function () {
+    }).then(function (confirmAttempted) {
+      if (confirmAttempted === false && !results.category) {
+        return {
+          success: false,
+          results: results,
+          error: '类目选择失败，已阻止点击下一步'
+        };
+      }
       var allOk = results.category && results.confirm;
       log('类目页填充完成, 结果:', results);
       return {

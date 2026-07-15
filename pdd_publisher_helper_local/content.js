@@ -5,6 +5,7 @@
 
   var Utils, InputHandler, SelectHandler, ImageHandler, SkuHandler, MainModule, CategoryHandler, ImageFission;
   var Toast, Logger;
+  var HELPER_VERSION = '2.1.16';
 
   // 当前页面类型
   var PAGE_TYPE = detectPageType();
@@ -544,9 +545,12 @@
       return Promise.resolve(false);
     }
     Logger.info('发布前信息页补上传主图，数量:', items.length);
-    return uploadImages(items, {
-      fileInputFinder: ImageHandler.findPrefillMainImageFileInput,
-      areaFinder: ImageHandler.findPrefillMainImageArea
+    return ImageHandler.activatePrefillMainImageUpload({ delay: Utils.delay }).then(function (activated) {
+      if (!activated) return false;
+      return uploadImages(items, {
+        fileInputFinder: ImageHandler.findPrefillMainImageFileInput,
+        areaFinder: ImageHandler.findPrefillMainImageArea
+      });
     }).then(function (ok) {
       return Utils.delay(2500).then(function () { return !!ok; });
     });
@@ -609,6 +613,11 @@
     return new Promise(function (resolve) {
       function sample() {
         var variant = CategoryHandler.detectPageVariant();
+        var elapsed = Date.now() - startedAt;
+        var prefillState = CategoryHandler.getPrefillPageState();
+        if (prefillState && prefillState.isPrefill) variant = 'v4';
+        // 页面初始化时会短暂挂载旧类目树节点；v2 必须经过 6 秒观察期才能成立。
+        if (variant === 'v2' && elapsed < 6000) variant = 'unknown';
         if (variant !== 'unknown' && variant === lastVariant) {
           stableSamples += 1;
         } else {
@@ -619,7 +628,7 @@
           resolve(variant);
           return;
         }
-        if (Date.now() - startedAt >= maxWait) {
+        if (elapsed >= maxWait) {
           resolve('unknown');
           return;
         }
@@ -630,10 +639,10 @@
   }
 
   function executeCategoryFill(productData, fissionConfig, variant) {
-    reportWorkbenchProgress('category_start', '发布前信息页已稳定，开始按主图、标题、类目顺序处理');
+    reportWorkbenchProgress('category_start', '助手 v' + HELPER_VERSION + '：发布前信息页已稳定，开始按主图、标题、类目顺序处理', { variant: variant, helperVersion: HELPER_VERSION });
 
     Logger.info('检测到类目页变体:', variant);
-    reportWorkbenchProgress('category_detected', '已识别类目页，准备选择明装小拉手', { variant: variant });
+    reportWorkbenchProgress('category_detected', '已识别类目页，准备先填写主图和标题', { variant: variant, helperVersion: HELPER_VERSION });
 
     if (variant === 'v3' || variant === 'v4') {
       // v3/v4: 先上传图片、填标题，再点下一步
@@ -658,10 +667,14 @@
         var items = collectMainImageItems(productData);
         if (items.length > 0) {
           Logger.info('v3/v4 Step 1: 上传轮播图');
-          return uploadImages(items, {
-            fileInputFinder: ImageHandler.findPrefillMainImageFileInput,
-            areaFinder: ImageHandler.findPrefillMainImageArea
-          }).then(function () {
+          return ImageHandler.activatePrefillMainImageUpload({ delay: Utils.delay }).then(function (activated) {
+            if (!activated) throw new Error('主图上传失败：未找到“上传图片”的文件入口');
+            return uploadImages(items, {
+              fileInputFinder: ImageHandler.findPrefillMainImageFileInput,
+              areaFinder: ImageHandler.findPrefillMainImageArea
+            });
+          }).then(function (uploaded) {
+            if (!uploaded) throw new Error('主图上传失败：页面没有接收主图文件');
             return Utils.delay(3000); // 等待图片上传和AI识别
           });
         }
@@ -673,7 +686,8 @@
         reportWorkbenchProgress('category_fill_title', '类目页：正在填写标题并等待系统推荐类目');
         if (productData.title) {
           Logger.info('v3/v4 Step 2: 填充标题');
-          return CategoryHandler.fillTitleOnCategoryPage(productData.title).then(function () {
+          return CategoryHandler.fillTitleOnCategoryPage(productData.title).then(function (filled) {
+            if (!filled) throw new Error('标题填写失败：页面没有接收商品标题');
             // fillTitleOnCategoryPage 已包含 blur + 2s 等待
             // 额外等待确保分类预测区域渲染完成
             return Utils.delay(2000);

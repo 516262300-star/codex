@@ -179,6 +179,56 @@
            document.body;
   }
 
+  function findVisibleTextControl(texts) {
+    texts = Array.isArray(texts) ? texts : [texts];
+    var normalized = texts.map(function (text) { return normalizeText(text); });
+    var controls = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], label, div, span, a'));
+    var best = null;
+    for (var i = 0; i < controls.length; i++) {
+      var el = controls[i];
+      if (!isElementVisible(el)) continue;
+      var text = normalizeText(el.innerText || el.textContent || '');
+      if (normalized.indexOf(text) < 0) continue;
+      var rect = el.getBoundingClientRect();
+      var score = text.length + rect.width * rect.height / 1000;
+      if (!best || score < best.score) best = { el: el, score: score };
+    }
+    return best && best.el;
+  }
+
+  function activatePrefillMainImageUpload(options) {
+    options = options || {};
+    var delay = options.delay || function (ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    };
+    if (findPrefillMainImageFileInput()) return Promise.resolve(true);
+
+    var trigger = findVisibleTextControl(['上传图片']);
+    if (!trigger) return Promise.resolve(false);
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    return delay(500).then(function () {
+      if (findPrefillMainImageFileInput()) return true;
+      var localTrigger = findVisibleTextControl(['本地上传', '上传本地图片', '本地图片']);
+      if (localTrigger) localTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      var startedAt = Date.now();
+      return new Promise(function (resolve) {
+        function check() {
+          if (findPrefillMainImageFileInput()) {
+            resolve(true);
+            return;
+          }
+          if (Date.now() - startedAt >= 4000) {
+            resolve(false);
+            return;
+          }
+          delay(200).then(check);
+        }
+        check();
+      });
+    });
+  }
+
   function findMainVideoFileInput() {
     var area = findPrefillMainImageArea();
     var scopedInputs = area ? Array.prototype.slice.call(area.querySelectorAll('input[type="file"]')) : [];
@@ -1494,6 +1544,7 @@
     findImageFileInput: findImageFileInput,
     findPrefillMainImageFileInput: findPrefillMainImageFileInput,
     findPrefillMainImageArea: findPrefillMainImageArea,
+    activatePrefillMainImageUpload: activatePrefillMainImageUpload,
     findMainVideoFileInput: findMainVideoFileInput,
     activateMainVideoUploadTab: activateMainVideoUploadTab,
     selectVideoFromMaterial: selectVideoFromMaterial,

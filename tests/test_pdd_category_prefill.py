@@ -25,6 +25,7 @@ def test_category_task_waits_for_stable_prefill_page_before_claiming():
 
     assert "waitForStableCategoryVariant(20000)" in poll_body
     assert poll_body.index("waitForStableCategoryVariant(20000)") < poll_body.index("claimTask(item)")
+    assert "variant === 'v2' && elapsed < 6000" in content
 
 
 def test_prefill_flow_keeps_main_image_title_category_order():
@@ -35,3 +36,5 @@ def test_prefill_flow_keeps_main_image_title_category_order():
 
     assert flow.index("uploadImages(items") < flow.index("fillTitleOnCategoryPage")
     assert flow.index("fillTitleOnCategoryPage") < flow.index("selectPredictedCategory")
+    assert flow.index("activatePrefillMainImageUpload") < flow.index("uploadImages(items")
+    assert "if (!uploaded) throw new Error" in flow
