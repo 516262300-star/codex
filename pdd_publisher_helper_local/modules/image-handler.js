@@ -326,6 +326,40 @@
     return String(text || '').replace(/\s+/g, '').trim();
   }
 
+  function materialSelectedVideoCount(modal) {
+    if (!modal) return null;
+    var text = normalizeText(modal.innerText || modal.textContent || '');
+    var match = text.match(/已(?:选|选择)(\d+)(?:张|个)/);
+    return match ? Number(match[1]) : null;
+  }
+
+  function clickLikeUser(el) {
+    if (!el) return false;
+    try {
+      if (typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+      }
+      var eventInit = { bubbles: true, cancelable: true, view: window };
+      if (typeof PointerEvent === 'function') {
+        el.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+      }
+      el.dispatchEvent(new MouseEvent('mousedown', eventInit));
+      el.dispatchEvent(new MouseEvent('mouseup', eventInit));
+      if (typeof PointerEvent === 'function') {
+        el.dispatchEvent(new PointerEvent('pointerup', eventInit));
+      }
+      if (typeof el.click === 'function') {
+        el.click();
+      } else {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      }
+      return true;
+    } catch (err) {
+      console.warn('[PDD填充插件] 点击图片空间视频卡片失败:', err);
+      return false;
+    }
+  }
+
   function findMaterialVideoDialog() {
     var nodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], [class*="Modal"], [class*="modal"], body > div'));
     var best = null;
@@ -495,47 +529,79 @@
     var name = String((videoItem && (videoItem.filename || videoItem.name)) || '');
     var stem = name.replace(/\.[a-z0-9]+$/i, '');
     var probes = [name, stem, stem.slice(0, 12), stem.slice(0, 8)].filter(function (x) { return normalizeText(x).length >= 2; });
+    var matched = null;
     for (var i = 0; i < probes.length; i++) {
-      var matched = findBestVisibleTextElement(refreshed, probes[i], { exact: false, rightOnly: true });
-      if (matched) {
-        var clickTarget = matched;
-        var current = matched;
-        for (var depth = 0; current && depth < 6; depth++, current = current.parentElement) {
-          var checkbox = current.querySelector && current.querySelector('input[type="checkbox"], [role="checkbox"]');
-          if (checkbox) {
-            clickTarget = checkbox.closest('label') || checkbox;
-            break;
-          }
-          var box = current.getBoundingClientRect();
-          if (box.width >= 80 && box.height >= 100 && box.width <= 260 && box.height <= 320) clickTarget = current;
-        }
-        clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        return delay(500).then(function () {
-          var latest = findMaterialVideoDialog() || refreshed;
-          var selectedMatch = normalizeText(latest.innerText || latest.textContent || '').match(/已选(\d+)张/);
-          return !selectedMatch || Number(selectedMatch[1]) > 0;
+      matched = findBestVisibleTextElement(refreshed, probes[i], { exact: false, rightOnly: true });
+      if (matched) break;
+    }
+
+    var modalRect = refreshed.getBoundingClientRect();
+    var candidates = [];
+    var current = matched;
+    for (var depth = 0; current && current !== refreshed && depth < 9; depth++, current = current.parentElement) {
+      var currentRect = current.getBoundingClientRect();
+      var currentText = normalizeText(current.innerText || current.textContent || '');
+      if (currentRect.left >= modalRect.left + modalRect.width * 0.25 &&
+          currentRect.width >= 80 && currentRect.width <= 300 &&
+          currentRect.height >= 100 && currentRect.height <= 360 &&
+          (!stem || currentText.includes(normalizeText(stem)))) {
+        candidates.push({
+          el: current,
+          score: Math.abs(currentRect.width - 150) + Math.abs(currentRect.height - 220)
         });
       }
     }
+    candidates.sort(function (a, b) { return a.score - b.score; });
 
-    var rect = refreshed.getBoundingClientRect();
-    var nodes = Array.prototype.slice.call(refreshed.querySelectorAll('div, li'));
-    var best = null;
-    for (var ni = 0; ni < nodes.length; ni++) {
-      var el = nodes[ni];
-      if (!isElementVisible(el)) continue;
+    var card = candidates.length ? candidates[0].el : null;
+    if (!card && matched) card = matched;
+    if (!card) return Promise.resolve(false);
+
+    var beforeCount = materialSelectedVideoCount(refreshed);
+    if (beforeCount !== null && beforeCount > 0) return Promise.resolve(true);
+
+    var cardRect = card.getBoundingClientRect();
+    var explicitControls = Array.prototype.slice.call(card.querySelectorAll(
+      'input[type="checkbox"], [role="checkbox"], [class*="Checkbox"], [class*="checkbox"], [class*="checkBox"], [class*="CheckBox"]'
+    )).filter(isElementVisible).map(function (el) {
       var box = el.getBoundingClientRect();
-      var text = normalizeText(el.innerText || el.textContent || '');
-      if (box.left < rect.left + rect.width * 0.25) continue;
-      if (box.bottom > rect.bottom - 70 || box.top < rect.top + 80) continue;
-      if (text.includes('全部文件') || text.includes('查询') || text.includes('刷新') || text.includes('本地上传') || text.includes('确认')) continue;
-      if (box.width < 45 || box.height < 45) continue;
-      var score = Math.abs(box.width - 120) + Math.abs(box.height - 180) + Math.max(0, box.top - rect.top) + Math.max(0, box.left - rect.left) / 1000;
-      if (!best || score < best.score) best = { el: el, score: score };
+      return {
+        el: el.closest('label') || el,
+        score: Math.abs(box.right - cardRect.right) + Math.abs(box.top - cardRect.top)
+      };
+    }).sort(function (a, b) { return a.score - b.score; });
+
+    var attempts = [];
+    explicitControls.forEach(function (item) {
+      attempts.push(function () { return clickLikeUser(item.el); });
+    });
+    [[-16, 18], [-12, 32], [-24, 18]].forEach(function (offset) {
+      attempts.push(function () {
+        var latestCardRect = card.getBoundingClientRect();
+        var target = document.elementFromPoint(latestCardRect.right + offset[0], latestCardRect.top + offset[1]);
+        if (!target || !refreshed.contains(target)) return false;
+        return clickLikeUser(target);
+      });
+    });
+    attempts.push(function () { return clickLikeUser(card); });
+    attempts.push(function () { return clickLikeUser(matched); });
+
+    function runAttempt(index) {
+      if (index >= attempts.length) return Promise.resolve(false);
+      var clicked = attempts[index]();
+      if (!clicked) return runAttempt(index + 1);
+      return delay(450).then(function () {
+        var latest = findMaterialVideoDialog() || refreshed;
+        var selectedCount = materialSelectedVideoCount(latest);
+        if (selectedCount !== null) return selectedCount > 0 ? true : runAttempt(index + 1);
+
+        var checked = card.querySelector('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]');
+        if (checked) return true;
+        return runAttempt(index + 1);
+      });
     }
-    if (!best) return Promise.resolve(false);
-    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return delay(500).then(function () { return true; });
+
+    return runAttempt(0);
   }
 
   function confirmMaterialVideoDialog(delay) {
