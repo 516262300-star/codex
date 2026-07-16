@@ -571,8 +571,10 @@ def apply_sku_derived_attributes(listing: dict[str, Any], sku_rows: list[dict[st
     hole_distance = infer_hole_distance_from_skus(sku_rows)
     if hole_distance:
         attributes["孔距"] = hole_distance
+        attributes["外形"] = "球形" if hole_distance == "单孔" else "条形"
     else:
         attributes.pop("孔距", None)
+        attributes.pop("外形", None)
     listing["attributes"] = attributes
     return hole_distance
 
@@ -750,7 +752,11 @@ async def upload_plan_payload(
             for index, image in enumerate(detail_images, start=1)
         ],
         "sku_specs": sku_specs,
-        "derived_attributes": {"孔距": hole_distance} if hole_distance else {},
+        "derived_attributes": {
+            name: listing["attributes"][name]
+            for name in ("孔距", "外形")
+            if name in listing["attributes"]
+        },
         "checks": {
             "main_image_count": len(main_images),
             "main_video_count": len(main_videos),

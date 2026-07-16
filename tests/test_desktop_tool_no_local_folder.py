@@ -107,12 +107,18 @@ def test_hole_distance_is_derived_from_size_skus_instead_of_template_default():
 
     assert desktop_tool.apply_sku_derived_attributes(listing, rows) == "96mm"
     assert listing["attributes"]["孔距"] == "96mm"
+    assert listing["attributes"]["外形"] == "条形"
 
 
 def test_hole_distance_keeps_single_hole_only_when_size_skus_contain_it():
-    assert desktop_tool.infer_hole_distance_from_skus([
+    rows = [
         {"sku_name": "2718-亮金-单孔", "price_book_name": "2718-单孔"},
-    ]) == "单孔"
+    ]
+    assert desktop_tool.infer_hole_distance_from_skus(rows) == "单孔"
+
+    listing = {"attributes": {"外形": "条形"}}
+    desktop_tool.apply_sku_derived_attributes(listing, rows)
+    assert listing["attributes"]["外形"] == "球形"
 
 
 def test_hole_distance_prefers_single_hole_over_numeric_distances():
@@ -130,11 +136,12 @@ def test_hole_distance_uses_only_smallest_numeric_distance_for_single_select_att
     ]) == "96mm"
 
 
-def test_hole_distance_is_omitted_when_skus_do_not_identify_it():
-    listing = {"attributes": {"孔距": "单孔"}}
+def test_hole_distance_and_shape_are_omitted_when_skus_do_not_identify_them():
+    listing = {"attributes": {"孔距": "单孔", "外形": "球形"}}
 
     assert desktop_tool.apply_sku_derived_attributes(listing, [{"sku_name": "8105-古铜色"}]) == ""
     assert "孔距" not in listing["attributes"]
+    assert "外形" not in listing["attributes"]
 
 
 def test_listing_videos_use_square_video_for_product_and_vertical_for_explanation():
