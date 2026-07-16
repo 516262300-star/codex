@@ -105,8 +105,8 @@ def test_hole_distance_is_derived_from_size_skus_instead_of_template_default():
 
     listing = {"attributes": {"孔距": "单孔", "材质": "锌合金"}}
 
-    assert desktop_tool.apply_sku_derived_attributes(listing, rows) == "96mm/128mm"
-    assert listing["attributes"]["孔距"] == "96mm/128mm"
+    assert desktop_tool.apply_sku_derived_attributes(listing, rows) == "96mm"
+    assert listing["attributes"]["孔距"] == "96mm"
 
 
 def test_hole_distance_keeps_single_hole_only_when_size_skus_contain_it():
@@ -115,11 +115,19 @@ def test_hole_distance_keeps_single_hole_only_when_size_skus_contain_it():
     ]) == "单孔"
 
 
-def test_hole_distance_can_include_single_and_multiple_numeric_distances():
+def test_hole_distance_prefers_single_hole_over_numeric_distances():
     assert desktop_tool.infer_hole_distance_from_skus([
         {"sku_name": "8256-金-单孔", "price_book_name": "8256-单孔"},
         {"sku_name": "8256-金-96尺寸图", "price_book_name": "8256-96"},
-    ]) == "单孔/96mm"
+    ]) == "单孔"
+
+
+def test_hole_distance_uses_only_smallest_numeric_distance_for_single_select_attribute():
+    assert desktop_tool.infer_hole_distance_from_skus([
+        {"sku_name": "8256-金-192尺寸图", "price_book_name": "8256-192"},
+        {"sku_name": "8256-金-96尺寸图", "price_book_name": "8256-96"},
+        {"sku_name": "8256-金-128尺寸图", "price_book_name": "8256-128"},
+    ]) == "96mm"
 
 
 def test_hole_distance_is_omitted_when_skus_do_not_identify_it():

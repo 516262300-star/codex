@@ -533,7 +533,7 @@ def summarize_sku_models(sku_rows: list[dict[str, Any]], fallback: str) -> str:
 
 
 def infer_hole_distance_from_skus(sku_rows: list[dict[str, Any]]) -> str:
-    """从尺寸图生成的 SKU 判断孔距，绝不把模板默认值当成识别结果。"""
+    """从尺寸图生成的 SKU 判断单个商品孔距，绝不拼接多个单选值。"""
     texts = [
         " ".join(
             str(row.get(key) or "")
@@ -548,6 +548,8 @@ def infer_hole_distance_from_skus(sku_rows: list[dict[str, Any]]) -> str:
         for row in sku_rows
     ]
     has_single_hole = any("单孔" in text for text in texts)
+    if has_single_hole:
+        return "单孔"
 
     distances: list[int] = []
     for row, text in zip(sku_rows, texts):
@@ -561,8 +563,7 @@ def infer_hole_distance_from_skus(sku_rows: list[dict[str, Any]]) -> str:
                 distances.append(distance)
 
     distances.sort()
-    values = (["单孔"] if has_single_hole else []) + [f"{distance}mm" for distance in distances]
-    return "/".join(values)
+    return f"{distances[0]}mm" if distances else ""
 
 
 def apply_sku_derived_attributes(listing: dict[str, Any], sku_rows: list[dict[str, Any]]) -> str:
