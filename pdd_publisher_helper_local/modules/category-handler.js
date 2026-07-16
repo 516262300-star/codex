@@ -544,6 +544,15 @@
   function selectPredictedCategory(productData) {
     log('v4: 手动选择分类流程');
 
+    var selectedPageText = document.body && normalizeText(document.body.innerText || document.body.textContent || '');
+    var selectedLevels = [productData.cat1Name, productData.cat2Name, productData.cat3Name, productData.cat4Name].filter(Boolean);
+    var selectedLastLevel = selectedLevels.length ? normalizeText(selectedLevels[selectedLevels.length - 1]) : '';
+    if (selectedPageText && selectedPageText.includes('已选分类') &&
+        (!selectedLastLevel || selectedPageText.includes(selectedLastLevel))) {
+      log('页面已经显示目标已选分类，跳过重复分类选择');
+      return Promise.resolve(true);
+    }
+
     // 查找可直接点击的"选择分类"/"手动选择商品分类"按钮
     function findDirectCategoryButton() {
       // choose_cate_new: 无推荐时的"选择分类"按钮
@@ -931,6 +940,11 @@
       log('检测到 v4 发布前信息页');
       return 'v4';
     }
+    if (bodyText && bodyText.includes('上传商品轮播图') &&
+        bodyText.includes('选择商品分类') && hasNextStep) {
+      log('检测到无标题框的以图发品页面');
+      return 'v3';
+    }
     // v2: 传统类目树
     var v2Tree = document.querySelector('.item-group-container-v2') || document.querySelector('.staple-category-container');
     if (v2Tree && isElementVisible(v2Tree)) {
@@ -1023,9 +1037,12 @@
     return {
       isPrefill: !!((body && body.includes('商品主图') && body.includes('商品标题') &&
         (body.includes('下一步') || body.includes('完善商品信息'))) ||
+        (body && body.includes('上传商品轮播图') && body.includes('选择商品分类') &&
+         (body.includes('下一步') || body.includes('完善商品信息'))) ||
         (titleInput && (document.querySelector('#goodsCarousel') || document.querySelector('#goodsCarouselId')) &&
          body && (body.includes('下一步') || body.includes('完善商品信息')))),
       imageCount: imageCount,
+      hasTitleInput: !!titleInput,
       title: titleInput ? (titleInput.value || '').trim() : ''
     };
   }
@@ -1035,8 +1052,10 @@
     return waitForCondition(function () {
       var state = getPrefillPageState();
       var hasImages = state.imageCount >= minImages;
-      var hasTitle = !!state.title;
-      if (expectedTitle) hasTitle = state.title === expectedTitle || state.title.indexOf(expectedTitle) >= 0;
+      var hasTitle = !state.hasTitleInput || !!state.title;
+      if (state.hasTitleInput && expectedTitle) {
+        hasTitle = state.title === expectedTitle || state.title.indexOf(expectedTitle) >= 0;
+      }
       return hasImages && hasTitle;
     }, 15000, 500).then(function (ok) {
       if (!ok) {

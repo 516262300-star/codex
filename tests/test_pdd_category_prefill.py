@@ -38,3 +38,15 @@ def test_prefill_flow_keeps_main_image_title_category_order():
     assert flow.index("fillTitleOnCategoryPage") < flow.index("selectPredictedCategory")
     assert flow.index("activatePrefillMainImageUpload") < flow.index("uploadImages(items")
     assert "if (!uploaded) throw new Error" in flow
+
+
+def test_image_publish_prefill_without_title_is_detected_and_skips_title_requirement():
+    root = Path(__file__).parents[1]
+    content = (root / "pdd_publisher_helper_local" / "content.js").read_text(encoding="utf-8")
+    handler = (root / "pdd_publisher_helper_local" / "modules" / "category-handler.js").read_text(encoding="utf-8")
+
+    assert "bodyText.includes('上传商品轮播图')" in content
+    assert "bodyText.includes('选择商品分类')" in content
+    assert "prefillState.hasTitleInput && productData.title" in content
+    assert "!state.hasTitleInput || !!state.title" in handler
+    assert "selectedPageText.includes('已选分类')" in handler

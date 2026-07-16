@@ -5,7 +5,7 @@
 
   var Utils, InputHandler, SelectHandler, ImageHandler, SkuHandler, MainModule, CategoryHandler, ImageFission;
   var Toast, Logger;
-  var HELPER_VERSION = '2.1.16';
+  var HELPER_VERSION = '2.1.18';
 
   // 当前页面类型
   var PAGE_TYPE = detectPageType();
@@ -17,8 +17,11 @@
     var hasPrefillTitle = !!document.querySelector('#goodsNameId input, #goods_name input, input[placeholder*="商品标题"], input[placeholder*="商品描述"]');
     var hasPrefillImages = !!document.querySelector('#goodsCarousel, #goodsCarouselId, [data-tracking-viewid="el_upload_wheel_chart"]');
     var hasPrefillNext = bodyText && (bodyText.includes('下一步') || bodyText.includes('完善商品信息'));
+    var hasImagePublishPrefill = bodyText && bodyText.includes('上传商品轮播图') &&
+      bodyText.includes('选择商品分类') && hasPrefillNext;
     // 部分店铺的发布前信息页沿用详情页 URL，必须优先按页面结构识别。
-    if ((bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') && hasPrefillNext) ||
+    if (hasImagePublishPrefill ||
+        (bodyText && bodyText.includes('商品主图') && bodyText.includes('商品标题') && hasPrefillNext) ||
         (hasPrefillTitle && hasPrefillImages && hasPrefillNext)) return 'category';
     if (url.includes('/goods/goods_add/index')) return 'detail';
     if (url.includes('/goods/category')) return 'category';
@@ -570,7 +573,7 @@
 
     chain = chain.then(function () {
       var latest = CategoryHandler.getPrefillPageState();
-      if (productData.title && latest.title !== productData.title) {
+      if (latest.hasTitleInput && productData.title && latest.title !== productData.title) {
         reportWorkbenchProgress('category_prefill_fill_title', '发布前信息页：正在补填写商品标题');
         return CategoryHandler.fillTitleOnCategoryPage(productData.title);
       }
@@ -639,14 +642,14 @@
   }
 
   function executeCategoryFill(productData, fissionConfig, variant) {
-    reportWorkbenchProgress('category_start', '助手 v' + HELPER_VERSION + '：发布前信息页已稳定，开始按主图、标题、类目顺序处理', { variant: variant, helperVersion: HELPER_VERSION });
+    reportWorkbenchProgress('category_start', '助手 v' + HELPER_VERSION + '：发布前信息页已稳定，开始按页面现有字段和类目顺序处理', { variant: variant, helperVersion: HELPER_VERSION });
 
     Logger.info('检测到类目页变体:', variant);
-    reportWorkbenchProgress('category_detected', '已识别类目页，准备先填写主图和标题', { variant: variant, helperVersion: HELPER_VERSION });
+    reportWorkbenchProgress('category_detected', '已识别类目页，准备先填写主图及页面提供的标题字段', { variant: variant, helperVersion: HELPER_VERSION });
 
     if (variant === 'v3' || variant === 'v4') {
       // v3/v4: 先上传图片、填标题，再点下一步
-      Toast.show('开始填充（' + variant + ' 图片+标题+下一步）...', 'info', 3000);
+      Toast.show('开始填充（' + variant + ' 发布前字段+类目+下一步）...', 'info', 3000);
 
       var chain = Promise.resolve();
 
@@ -681,10 +684,11 @@
         return Promise.resolve();
       });
 
-      // Step 2: 填充标题（v4 有标题输入框，v3 可能没有）
+      // Step 2: 仅在页面真实提供标题输入框时填充标题。
       chain = chain.then(function () {
-        reportWorkbenchProgress('category_fill_title', '类目页：正在填写标题并等待系统推荐类目');
-        if (productData.title) {
+        var prefillState = CategoryHandler.getPrefillPageState();
+        if (prefillState.hasTitleInput && productData.title) {
+          reportWorkbenchProgress('category_fill_title', '类目页：正在填写标题并等待系统推荐类目');
           Logger.info('v3/v4 Step 2: 填充标题');
           return CategoryHandler.fillTitleOnCategoryPage(productData.title).then(function (filled) {
             if (!filled) throw new Error('标题填写失败：页面没有接收商品标题');
@@ -693,16 +697,18 @@
             return Utils.delay(2000);
           });
         }
+        Logger.info('v3/v4 Step 2: 当前以图发品页没有标题框，跳过标题填写');
+        reportWorkbenchProgress('category_skip_title', '类目页没有标题输入框，按页面要求跳过标题并继续');
         return Promise.resolve();
       });
 
       // Step 3: 校验发布前信息页必填项
       chain = chain.then(function () {
-        Logger.info('v3/v4 Step 3: 校验主图和标题已填');
-        reportWorkbenchProgress('category_prefill_check', '类目页：正在确认主图和标题已填写');
+        Logger.info('v3/v4 Step 3: 校验页面实际存在的发布前必填项');
+        reportWorkbenchProgress('category_prefill_check', '类目页：正在确认主图及页面现有必填项已完成');
         return ensurePrefillRequiredFields(productData).then(function (ready) {
           if (!ready) {
-            throw new Error('发布前信息页主图或标题未填写完成');
+            throw new Error('发布前信息页主图或页面现有必填项未完成');
           }
           return Utils.delay(500);
         });
