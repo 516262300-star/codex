@@ -5,7 +5,7 @@
 
   var Utils, InputHandler, SelectHandler, ImageHandler, SkuHandler, MainModule, CategoryHandler, ImageFission;
   var Toast, Logger;
-  var HELPER_VERSION = '2.1.19';
+  var HELPER_VERSION = '2.1.25';
   var ACTIVE_TASK_ID = null;
 
   // 当前页面类型
@@ -78,7 +78,7 @@
           page_type: PAGE_TYPE,
           url: window.location.href,
           task_id: ACTIVE_TASK_ID,
-          ok: stage !== 'error'
+          ok: stage !== 'error' && stage !== 'cancelled'
         })
       }).catch(function () {});
     } catch (_) {}
@@ -287,6 +287,33 @@
   function fillTitle(title) {
     MainModule.fillTitle(title);
     return Promise.resolve(true);
+  }
+
+  function workbenchCancelledError(message) {
+    var err = new Error(message || '任务已由用户结束');
+    err.isWorkbenchCancelled = true;
+    return err;
+  }
+
+  function checkWorkbenchCancellation() {
+    if (!ACTIVE_TASK_ID) return Promise.resolve(false);
+    return fetch('http://127.0.0.1:8765/api/batch-task-control?task_id=' + encodeURIComponent(ACTIVE_TASK_ID))
+      .then(function (res) {
+        if (!res.ok) return null;
+        return res.json();
+      })
+      .then(function (json) {
+        var control = json && json.data ? json.data : {};
+        if (control.cancel_requested) {
+          throw workbenchCancelledError(control.message || '任务已由用户结束，不保存草稿');
+        }
+        return false;
+      })
+      .catch(function (err) {
+        if (err && err.isWorkbenchCancelled) throw err;
+        // 本地工作台短暂不可用时不能误停正常任务。
+        return false;
+      });
   }
 
   function normalizePageText(value) {
@@ -589,7 +616,11 @@
   function handleCategoryFill(productData, fissionConfig) {
     Logger.info('===== 类目页填充流程开始 =====');
     reportWorkbenchProgress('category_waiting', '已收到任务，正在等待发布前信息页加载完成');
-    return waitForStableCategoryVariant(20000).then(function (variant) {
+    return checkWorkbenchCancellation().then(function () {
+      return waitForStableCategoryVariant(20000);
+    }).then(function (variant) {
+      return checkWorkbenchCancellation().then(function () { return variant; });
+    }).then(function (variant) {
       if (variant === 'unknown') {
         var message = '发布前信息页在 20 秒内未加载完成，未执行类目选择';
         Logger.error(message);
@@ -603,6 +634,11 @@
         return false;
       }
       return executeCategoryFill(productData, fissionConfig, variant);
+    }).catch(function (err) {
+      if (!err || !err.isWorkbenchCancelled) throw err;
+      reportWorkbenchProgress('cancelled', err.message || '任务已由用户结束，不继续类目填充');
+      Toast.show(err.message || '任务已结束', 'warning', 5000);
+      return false;
     });
   }
 
@@ -784,12 +820,21 @@
     Toast.show('等待详情页加载完成...', 'info', 5000);
 
     // 等待详情页关键元素加载完毕
-    return waitForDetailPageReady().then(function () {
+    return checkWorkbenchCancellation().then(function () {
+      return waitForDetailPageReady();
+    }).then(function () {
+      return checkWorkbenchCancellation();
+    }).then(function () {
       Logger.info('详情页已加载就绪，开始填充');
       reportWorkbenchProgress('detail_start', '商品编辑页已加载，开始自动填充');
       Toast.show('开始详情页自动填充...', 'info', 3000);
       return executeDetailFill(productData);
     }).catch(function (err) {
+      if (err && err.isWorkbenchCancelled) {
+        reportWorkbenchProgress('cancelled', err.message || '任务已由用户结束，不开始详情填充');
+        Toast.show(err.message || '任务已结束', 'warning', 5000);
+        return false;
+      }
       Logger.warn('详情页等待超时，仍尝试填充:', err);
       reportWorkbenchProgress('detail_start', '页面加载较慢，已超时但继续尝试填充');
       Toast.show('页面未完全加载，尝试填充...', 'warning', 3000);
@@ -1124,7 +1169,9 @@
     var chain = Promise.resolve();
     for (var i = 0; i < steps.length; i++) {
       (function (step) {
-        chain = chain.then(step);
+        chain = chain.then(function () {
+          return checkWorkbenchCancellation();
+        }).then(step);
       })(steps[i]);
     }
 
@@ -1138,6 +1185,20 @@
         results: stepResults
       });
     }).catch(function (err) {
+      if (err && err.isWorkbenchCancelled) {
+        Logger.warn('详情页填充已由用户结束:', err.message);
+        stepResults.draftSaved = false;
+        stepResults.draftSkippedReason = '任务已由用户结束，不保存草稿';
+        reportWorkbenchProgress('cancelled', stepResults.draftSkippedReason, stepResults);
+        Toast.show('任务已结束，不会保存草稿或继续下一条', 'warning', 6000);
+        chrome.runtime.sendMessage({
+          type: 'DETAIL_FILL_COMPLETE',
+          success: false,
+          cancelled: true,
+          error: stepResults.draftSkippedReason
+        });
+        return false;
+      }
       Logger.error('详情页填充异常:', err);
       reportWorkbenchProgress('error', '详情页填充异常：' + (err.message || String(err)));
       Toast.show('详情页填充异常: ' + err.message, 'error', 5000);
@@ -1266,6 +1327,12 @@
   }
 
   function saveDraftAfterValidation(productData, stepResults) {
+    return checkWorkbenchCancellation().then(function () {
+      return saveDraftAfterValidationUnchecked(productData, stepResults);
+    });
+  }
+
+  function saveDraftAfterValidationUnchecked(productData, stepResults) {
     var missing = validateBeforeSaveDraft(productData, stepResults);
     if (missing.length > 0) {
       var msg = '自动填充未完全通过检查，不保存草稿：' + missing.join('、');

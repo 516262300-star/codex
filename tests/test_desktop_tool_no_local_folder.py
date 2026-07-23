@@ -453,6 +453,7 @@ def test_submit_batch_queue_persists_multiple_tasks(tmp_path, monkeypatch):
         "completed": 0,
         "succeeded": 0,
         "failed": 0,
+        "cancelled": 0,
         "waiting": 2,
     }
     assert [item["material_path"] for item in queue["tasks"]] == ["2026/8256", "2026/8257"]
@@ -582,6 +583,63 @@ def test_plugin_task_result_requires_saved_draft_for_success():
     assert desktop_tool.plugin_task_result({
         "progress": {"stage": "error", "message": "图片上传失败", "ok": False}
     }) == (True, False, "图片上传失败")
+
+    assert desktop_tool.plugin_task_result({
+        "progress": {"stage": "cancelled", "message": "任务已由用户结束", "ok": False}
+    }) == (True, False, "任务已由用户结束")
+
+
+def test_cancel_batch_queue_stops_active_and_pending_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop_tool, "BATCH_QUEUE_PATH", tmp_path / "batch_listing_queue.json")
+    monkeypatch.setattr(desktop_tool, "ensure_batch_worker", lambda: None)
+    desktop_tool.submit_batch_queue({
+        "paths": ["2026/active", "2026/pending"],
+        "price_multiplier": "1.8",
+        "price_ending": "8",
+        "material": "黄铜",
+    })
+    queue = desktop_tool.read_batch_queue()
+    active = queue["tasks"][0]
+    desktop_tool.update_batch_task(active["id"], status="running", plugin_task_id=12345)
+
+    cancelled = desktop_tool.cancel_batch_queue()
+
+    assert cancelled["state"] == "cancelling"
+    assert cancelled["cancel_requested"] is True
+    assert [item["status"] for item in cancelled["tasks"]] == ["cancelling", "cancelled"]
+    assert cancelled["summary"]["cancelled"] == 1
+    assert desktop_tool.batch_task_cancel_requested(active["id"]) is True
+    assert desktop_tool.batch_task_control("12345")["cancel_requested"] is True
+
+    desktop_tool.update_batch_task(active["id"], status="cancelled", finished_at=desktop_tool.now_text())
+    assert desktop_tool.finish_batch_if_done() is True
+    finished = desktop_tool.batch_queue_view()
+    assert finished["state"] == "cancelled"
+    assert finished["summary"]["completed"] == 2
+    assert finished["summary"]["cancelled"] == 2
+
+
+def test_cancelled_batch_can_be_replaced_by_a_new_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop_tool, "BATCH_QUEUE_PATH", tmp_path / "batch_listing_queue.json")
+    monkeypatch.setattr(desktop_tool, "ensure_batch_worker", lambda: None)
+    desktop_tool.submit_batch_queue({
+        "paths": ["2026/old"],
+        "price_multiplier": "1.8",
+        "price_ending": "8",
+        "material": "黄铜",
+    })
+    desktop_tool.cancel_batch_queue()
+
+    new_queue = desktop_tool.submit_batch_queue({
+        "paths": ["2026/new"],
+        "price_multiplier": "1.9",
+        "price_ending": "9",
+        "material": "锌合金",
+    })
+
+    assert new_queue["state"] == "running"
+    assert new_queue["cancel_requested"] is False
+    assert [item["material_path"] for item in new_queue["tasks"]] == ["2026/new"]
 
 
 def test_batch_worker_continues_after_one_task_fails(tmp_path, monkeypatch):

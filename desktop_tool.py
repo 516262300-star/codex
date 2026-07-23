@@ -45,6 +45,7 @@ BATCH_QUEUE_LOCK = threading.RLock()
 BATCH_WORKER_LOCK = threading.Lock()
 BATCH_WORKER_THREAD: threading.Thread | None = None
 BATCH_TASK_TIMEOUT_SECONDS = 45 * 60
+BATCH_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 MATERIAL_OPTIONS = ("黄铜", "锌合金", "铝合金")
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 VIDEO_EXTENSIONS = {"mp4", "mov", "webm", "m4v"}
@@ -1254,6 +1255,8 @@ def empty_batch_queue() -> dict[str, Any]:
         "version": 1,
         "batch_id": "",
         "state": "idle",
+        "cancel_requested": False,
+        "cancel_requested_at": "",
         "created_at": "",
         "updated_at": now_text(),
         "completed_at": "",
@@ -1298,16 +1301,17 @@ def batch_queue_view(queue: dict[str, Any] | None = None) -> dict[str, Any]:
     tasks = [item for item in queue.get("tasks") or [] if isinstance(item, dict)]
     counts = {
         name: sum(1 for item in tasks if item.get("status") == name)
-        for name in ("pending", "preparing", "queued", "running", "succeeded", "failed")
+        for name in ("pending", "preparing", "queued", "running", "cancelling", "succeeded", "failed", "cancelled")
     }
     result = dict(queue)
     result["tasks"] = tasks
     result["summary"] = {
         "total": len(tasks),
-        "completed": counts["succeeded"] + counts["failed"],
+        "completed": counts["succeeded"] + counts["failed"] + counts["cancelled"],
         "succeeded": counts["succeeded"],
         "failed": counts["failed"],
-        "waiting": counts["pending"] + counts["preparing"] + counts["queued"] + counts["running"],
+        "cancelled": counts["cancelled"],
+        "waiting": counts["pending"] + counts["preparing"] + counts["queued"] + counts["running"] + counts["cancelling"],
     }
     result["failed_tasks"] = [
         {
@@ -1349,14 +1353,83 @@ def update_batch_task(task_id: str, **changes: Any) -> dict[str, Any] | None:
     return None
 
 
+def batch_task_cancel_requested(task_id: str) -> bool:
+    with BATCH_QUEUE_LOCK:
+        queue = _read_batch_queue_unlocked()
+        if not queue.get("cancel_requested"):
+            return False
+        return any(
+            str(task.get("id")) == str(task_id) and task.get("status") in {"cancelling", "cancelled"}
+            for task in queue.get("tasks") or []
+        )
+
+
+def batch_task_control(plugin_task_id: str) -> dict[str, Any]:
+    with BATCH_QUEUE_LOCK:
+        queue = _read_batch_queue_unlocked()
+        task = next(
+            (
+                item
+                for item in queue.get("tasks") or []
+                if str(item.get("plugin_task_id") or "") == str(plugin_task_id)
+            ),
+            None,
+        )
+        cancel_requested = bool(
+            task
+            and queue.get("cancel_requested")
+            and task.get("status") in {"cancelling", "cancelled"}
+        )
+        return {
+            "task_id": str(plugin_task_id or ""),
+            "cancel_requested": cancel_requested,
+            "status": str(task.get("status") or "") if task else "",
+            "message": str(task.get("message") or "") if task else "",
+        }
+
+
+def cancel_batch_queue() -> dict[str, Any]:
+    with BATCH_QUEUE_LOCK:
+        queue = _read_batch_queue_unlocked()
+        tasks = [item for item in queue.get("tasks") or [] if isinstance(item, dict)]
+        active_statuses = {"preparing", "queued", "running", "cancelling"}
+        if not any(task.get("status") not in BATCH_TERMINAL_STATUSES for task in tasks):
+            return batch_queue_view(queue)
+
+        timestamp = now_text()
+        queue["cancel_requested"] = True
+        queue["cancel_requested_at"] = timestamp
+        queue["state"] = "cancelling"
+        for task in tasks:
+            status = task.get("status")
+            if status == "pending":
+                task.update(
+                    status="cancelled",
+                    message="已由用户结束，未开始执行",
+                    finished_at=timestamp,
+                )
+            elif status in active_statuses:
+                task.update(
+                    status="cancelling",
+                    message="正在结束当前任务，不会保存草稿或继续下一条",
+                )
+
+        if not any(task.get("status") == "cancelling" for task in tasks):
+            queue["state"] = "cancelled"
+            queue["completed_at"] = timestamp
+        _write_batch_queue_unlocked(queue)
+        return batch_queue_view(queue)
+
+
 def finish_batch_if_done() -> bool:
     with BATCH_QUEUE_LOCK:
         queue = _read_batch_queue_unlocked()
         tasks = queue.get("tasks") or []
-        if any(task.get("status") not in {"succeeded", "failed"} for task in tasks):
+        if any(task.get("status") not in BATCH_TERMINAL_STATUSES for task in tasks):
             return False
-        if tasks and queue.get("state") != "completed":
-            queue["state"] = "completed"
+        final_state = "cancelled" if queue.get("cancel_requested") else "completed"
+        if tasks and queue.get("state") != final_state:
+            queue["state"] = final_state
             queue["completed_at"] = now_text()
             _write_batch_queue_unlocked(queue)
         return True
@@ -1366,6 +1439,8 @@ def plugin_task_result(status: dict[str, Any]) -> tuple[bool, bool, str]:
     progress = status.get("progress") if isinstance(status.get("progress"), dict) else {}
     stage = str(progress.get("stage") or "")
     message = str(progress.get("message") or stage or "等待插件执行")
+    if stage == "cancelled":
+        return True, False, message or "任务已由用户结束"
     if stage == "error" or progress.get("ok") is False:
         return True, False, message
     if stage != "done":
@@ -1391,6 +1466,8 @@ def wait_for_plugin_batch_task(task_id: str, plugin_task_id: int, timeout_s: int
     deadline = time.monotonic() + timeout_s
     marked_running = False
     while time.monotonic() < deadline:
+        if batch_task_cancel_requested(task_id):
+            return False, "已由用户结束，不保存草稿"
         status = read_plugin_status()
         if str(status.get("id")) == str(plugin_task_id):
             done, succeeded, message = plugin_task_result(status)
@@ -1407,6 +1484,9 @@ def wait_for_plugin_batch_task(task_id: str, plugin_task_id: int, timeout_s: int
 
 def run_batch_task(task: dict[str, Any]) -> None:
     task_id = str(task["id"])
+    if batch_task_cancel_requested(task_id):
+        update_batch_task(task_id, status="cancelled", message="已由用户结束，未开始执行", finished_at=now_text())
+        return
     update_batch_task(task_id, status="preparing", started_at=task.get("started_at") or now_text(), message="正在读取图片空间并查询 ERP 价格")
     try:
         asyncio.run(
@@ -1418,16 +1498,25 @@ def run_batch_task(task: dict[str, Any]) -> None:
                 str(task.get("price_ending") or "").strip() or None,
             )
         )
+        if batch_task_cancel_requested(task_id):
+            update_batch_task(task_id, status="cancelled", message="已由用户结束，不保存草稿", finished_at=now_text())
+            return
         custom_title = str(task.get("title") or "").strip()
         if custom_title:
             select_title_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER), custom_title)
         else:
             generate_title_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER))
+        if batch_task_cancel_requested(task_id):
+            update_batch_task(task_id, status="cancelled", message="已由用户结束，不保存草稿", finished_at=now_text())
+            return
         plugin_task_id = int(time.time() * 1000)
         update_batch_task(task_id, plugin_task_id=plugin_task_id, message="上架包已生成，正在打开发布页")
         asyncio.run(plugin_queue_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER), task_id=plugin_task_id))
         update_batch_task(task_id, status="queued", message="等待 Chrome 插件接收任务")
         succeeded, message = wait_for_plugin_batch_task(task_id, plugin_task_id)
+        if batch_task_cancel_requested(task_id):
+            update_batch_task(task_id, status="cancelled", message=message or "已由用户结束，不保存草稿", finished_at=now_text())
+            return
         update_batch_task(
             task_id,
             status="succeeded" if succeeded else "failed",
@@ -1435,7 +1524,10 @@ def run_batch_task(task: dict[str, Any]) -> None:
             finished_at=now_text(),
         )
     except Exception as exc:
-        update_batch_task(task_id, status="failed", message=str(exc), finished_at=now_text())
+        if batch_task_cancel_requested(task_id):
+            update_batch_task(task_id, status="cancelled", message="已由用户结束，不保存草稿", finished_at=now_text())
+        else:
+            update_batch_task(task_id, status="failed", message=str(exc), finished_at=now_text())
 
 
 def batch_worker_loop() -> None:
@@ -1444,15 +1536,21 @@ def batch_worker_loop() -> None:
         while True:
             queue = read_batch_queue()
             tasks = [task for task in queue.get("tasks") or [] if isinstance(task, dict)]
-            active = next((task for task in tasks if task.get("status") in {"queued", "running"}), None)
+            active = next((task for task in tasks if task.get("status") in {"queued", "running", "cancelling"}), None)
             if active and active.get("plugin_task_id"):
                 succeeded, message = wait_for_plugin_batch_task(str(active["id"]), int(active["plugin_task_id"]))
-                update_batch_task(
-                    str(active["id"]),
-                    status="succeeded" if succeeded else "failed",
-                    message=message,
-                    finished_at=now_text(),
-                )
+                if batch_task_cancel_requested(str(active["id"])):
+                    update_batch_task(str(active["id"]), status="cancelled", message=message, finished_at=now_text())
+                else:
+                    update_batch_task(
+                        str(active["id"]),
+                        status="succeeded" if succeeded else "failed",
+                        message=message,
+                        finished_at=now_text(),
+                    )
+                continue
+            if active and active.get("status") == "cancelling":
+                update_batch_task(str(active["id"]), status="cancelled", message="已由用户结束，不保存草稿", finished_at=now_text())
                 continue
             task = next((item for item in tasks if item.get("status") in {"pending", "preparing"}), None)
             if not task:
@@ -1463,7 +1561,7 @@ def batch_worker_loop() -> None:
         with BATCH_WORKER_LOCK:
             BATCH_WORKER_THREAD = None
         # 如果提交请求恰好发生在线程退出瞬间，重新检查一次，避免新任务滞留。
-        if any(task.get("status") not in {"succeeded", "failed"} for task in read_batch_queue().get("tasks") or []):
+        if any(task.get("status") not in BATCH_TERMINAL_STATUSES for task in read_batch_queue().get("tasks") or []):
             ensure_batch_worker()
 
 
@@ -1473,7 +1571,7 @@ def ensure_batch_worker() -> None:
         if BATCH_WORKER_THREAD and BATCH_WORKER_THREAD.is_alive():
             return
         queue = read_batch_queue()
-        if not any(task.get("status") not in {"succeeded", "failed"} for task in queue.get("tasks") or []):
+        if not any(task.get("status") not in BATCH_TERMINAL_STATUSES for task in queue.get("tasks") or []):
             return
         BATCH_WORKER_THREAD = threading.Thread(target=batch_worker_loop, name="pdd-batch-worker", daemon=True)
         BATCH_WORKER_THREAD.start()
@@ -1539,7 +1637,9 @@ def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
 
     with BATCH_QUEUE_LOCK:
         queue = _read_batch_queue_unlocked()
-        unfinished = any(task.get("status") not in {"succeeded", "failed"} for task in queue.get("tasks") or [])
+        unfinished = any(task.get("status") not in BATCH_TERMINAL_STATUSES for task in queue.get("tasks") or [])
+        if unfinished and queue.get("cancel_requested"):
+            raise ValueError("当前批次正在结束，请等队列显示“已结束”后再加入新任务")
         if not unfinished:
             batch_id = str(int(time.time() * 1000))
             queue = empty_batch_queue()
@@ -1548,12 +1648,14 @@ def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
             batch_id = str(queue.get("batch_id") or int(time.time() * 1000))
             queue["batch_id"] = batch_id
             queue["state"] = "running"
+            queue["cancel_requested"] = False
+            queue["cancel_requested_at"] = ""
             queue["completed_at"] = ""
 
         existing_paths = {
             str(task.get("material_path") or "")
             for task in queue.get("tasks") or []
-            if task.get("status") not in {"succeeded", "failed"}
+            if task.get("status") not in BATCH_TERMINAL_STATUSES
         }
         next_index = max((int(task.get("index") or 0) for task in queue.get("tasks") or []), default=0) + 1
         added = 0
@@ -1738,7 +1840,7 @@ def update_plugin_progress(payload: dict[str, Any]) -> dict[str, Any]:
         status["last_saved_draft"] = saved_entry
     elif progress["stage"] in {"done", "page_changed"}:
         enrich_latest_saved_draft(progress)
-    if progress["stage"] in {"done", "error", "queued"}:
+    if progress["stage"] in {"done", "error", "cancelled", "queued"}:
         status["status_text"] = progress["stage"]
     write_plugin_status(status)
     return {"code": 0, "msg": "ok", "data": status}
@@ -2023,6 +2125,18 @@ HTML = r"""<!doctype html>
     .batch-item { border-top: 1px solid var(--line); padding-top: 6px; }
     .batch-item.failed { color: #b42318; }
     .batch-item.succeeded { color: var(--ok); }
+    .batch-item.cancelled, .batch-item.cancelling { color: #b54708; }
+    .batch-head-actions { display: flex; align-items: center; gap: 8px; }
+    .batch-stop {
+      display: none;
+      height: 30px;
+      padding: 0 10px;
+      color: #b42318;
+      background: #fee4e2;
+      border: 1px solid #fecdca;
+    }
+    .batch-stop.visible { display: inline-block; }
+    .batch-stop:disabled { cursor: default; color: #667085; background: #f2f4f7; border-color: #eaecf0; }
     .batch-task-editor { display: grid; gap: 10px; margin-top: 12px; }
     .batch-task-card { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: #f8fafc; }
     .batch-task-path { font-size: 13px; font-weight: 650; word-break: break-all; margin-bottom: 8px; }
@@ -2099,7 +2213,10 @@ HTML = r"""<!doctype html>
         <div class="progress-meta" id="draftHistory">累计保存草稿：读取中。</div>
       </div>
       <div class="progress-box">
-        <div class="progress-head"><span>批量任务队列</span><span id="batchState">未开始</span></div>
+        <div class="progress-head">
+          <span>批量任务队列</span>
+          <span class="batch-head-actions"><span id="batchState">未开始</span><button class="batch-stop" id="cancelBatchBtn">结束任务</button></span>
+        </div>
         <div class="progress-message" id="batchSummary">可以一次填写多个图片空间路径。</div>
         <div class="batch-list" id="batchList"></div>
       </div>
@@ -2131,6 +2248,7 @@ HTML = r"""<!doctype html>
     const batchState = document.getElementById("batchState");
     const batchSummary = document.getElementById("batchSummary");
     const batchList = document.getElementById("batchList");
+    const cancelBatchBtn = document.getElementById("cancelBatchBtn");
     let lastBatchState = "";
     let batchTaskDrafts = new Map();
 
@@ -2301,12 +2419,17 @@ HTML = r"""<!doctype html>
       }
     }
     function setBatchView(batch) {
-      const summary = batch.summary || {total: 0, completed: 0, succeeded: 0, failed: 0, waiting: 0};
-      const stateNames = {idle: "未开始", running: "执行中", completed: "已完成"};
-      const statusNames = {pending: "等待", preparing: "准备中", queued: "已排队", running: "填充中", succeeded: "成功", failed: "失败"};
+      const summary = batch.summary || {total: 0, completed: 0, succeeded: 0, failed: 0, cancelled: 0, waiting: 0};
+      const stateNames = {idle: "未开始", running: "执行中", cancelling: "正在结束", cancelled: "已结束", completed: "已完成"};
+      const statusNames = {pending: "等待", preparing: "准备中", queued: "已排队", running: "填充中", cancelling: "正在结束", succeeded: "成功", failed: "失败", cancelled: "已结束"};
       batchState.textContent = stateNames[batch.state] || batch.state || "未开始";
+      const canCancel = batch.state === "running" && summary.waiting > 0;
+      const isCancelling = batch.state === "cancelling";
+      cancelBatchBtn.classList.toggle("visible", canCancel || isCancelling);
+      cancelBatchBtn.disabled = isCancelling;
+      cancelBatchBtn.textContent = isCancelling ? "正在结束…" : "结束任务";
       batchSummary.textContent = summary.total
-        ? `共 ${summary.total} 个｜已完成 ${summary.completed}｜成功 ${summary.succeeded}｜失败 ${summary.failed}｜待处理 ${summary.waiting}`
+        ? `共 ${summary.total} 个｜已完成 ${summary.completed}｜成功 ${summary.succeeded}｜失败 ${summary.failed}｜已结束 ${summary.cancelled || 0}｜待处理 ${summary.waiting}`
         : "可以一次填写多个图片空间路径。";
       const tasks = batch.tasks || [];
       batchList.innerHTML = tasks.map(item => `<div class="batch-item ${escapeHTML(item.status || "")}">
@@ -2331,6 +2454,21 @@ HTML = r"""<!doctype html>
     document.getElementById("applyBatchDefaultsBtn").onclick = () => {
       syncBatchTaskEditor(true);
       writeLog("已把顶部默认值应用到当前全部批量任务，你仍可逐条修改。");
+    };
+    cancelBatchBtn.onclick = async () => {
+      if (!window.confirm("确定结束当前批量任务吗？未开始的任务会立即取消，当前任务不会保存草稿，也不会继续下一条。")) return;
+      try {
+        cancelBatchBtn.disabled = true;
+        cancelBatchBtn.textContent = "正在结束…";
+        writeLog("正在结束批量任务：未开始的任务会取消，当前步骤结束后不会保存草稿或继续下一条。");
+        const response = await postJSON("/api/batch-queue/cancel", {});
+        setBatchView(response.data || {});
+        setState("正在结束");
+      } catch (err) {
+        cancelBatchBtn.disabled = false;
+        writeLog(err.message);
+        setState("出错");
+      }
     };
     function requireTaskInputs({needPath = false} = {}) {
       const missing = [];
@@ -2710,6 +2848,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/batch-queue":
             self._send_json({"code": 0, "msg": "ok", "data": batch_queue_view()})
             return
+        if parsed.path == "/api/batch-task-control":
+            query = parse_qs(parsed.query)
+            self._send_json({
+                "code": 0,
+                "msg": "ok",
+                "data": batch_task_control(str((query.get("task_id") or [""])[0])),
+            })
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_OPTIONS(self) -> None:
@@ -2781,6 +2927,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/batch-queue":
                 data = submit_batch_queue(payload)
+                self._send_json({"code": 0, "msg": "ok", "data": data})
+                return
+            if parsed.path == "/api/batch-queue/cancel":
+                data = cancel_batch_queue()
                 self._send_json({"code": 0, "msg": "ok", "data": data})
                 return
             if parsed.path == "/api/category-snapshot":
