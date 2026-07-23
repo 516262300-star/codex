@@ -1380,19 +1380,57 @@ def ensure_batch_worker() -> None:
         BATCH_WORKER_THREAD.start()
 
 
-def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
-    paths = parse_batch_material_paths(payload.get("paths") or payload.get("path"))
-    if not paths:
+def normalize_batch_task_inputs(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw_tasks = payload.get("tasks")
+    if isinstance(raw_tasks, list):
+        candidates = [item for item in raw_tasks if isinstance(item, dict)]
+    else:
+        candidates = [
+            {
+                "path": path,
+                "price_multiplier": payload.get("price_multiplier"),
+                "price_ending": payload.get("price_ending"),
+                "material": payload.get("material"),
+            }
+            for path in parse_batch_material_paths(payload.get("paths") or payload.get("path"))
+        ]
+    if not candidates:
         raise ValueError("请至少填写一个图片空间路径；多个路径请每行填写一个")
-    price_multiplier = str(payload.get("price_multiplier") or "").strip()
-    material = str(payload.get("material") or "").strip()
-    price_ending = str(payload.get("price_ending") or "").strip()
-    if not price_multiplier:
-        raise ValueError("请先填写价格倍数")
-    if material not in MATERIAL_OPTIONS:
-        raise ValueError("请先选择有效材质")
-    if price_ending not in {"8", "9"}:
-        raise ValueError("请先选择价格尾数：8 或 9")
+
+    tasks: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for item in candidates:
+        path = str(item.get("path") or item.get("material_path") or "").strip()
+        if not path or path in seen_paths:
+            continue
+        price_multiplier = str(item.get("price_multiplier") or "").strip()
+        material = str(item.get("material") or "").strip()
+        price_ending = str(item.get("price_ending") or "").strip()
+        if not price_multiplier:
+            raise ValueError(f"任务 {path}：请填写价格倍数")
+        try:
+            if Decimal(price_multiplier) <= 0:
+                raise ValueError
+        except Exception as exc:
+            raise ValueError(f"任务 {path}：价格倍数必须是大于 0 的数字") from exc
+        if material not in MATERIAL_OPTIONS:
+            raise ValueError(f"任务 {path}：请选择有效材质")
+        if price_ending not in {"8", "9"}:
+            raise ValueError(f"任务 {path}：请选择价格尾数 8 或 9")
+        seen_paths.add(path)
+        tasks.append({
+            "path": path,
+            "price_multiplier": price_multiplier,
+            "price_ending": price_ending,
+            "material": material,
+        })
+    if not tasks:
+        raise ValueError("没有可加入的有效任务")
+    return tasks
+
+
+def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
+    task_inputs = normalize_batch_task_inputs(payload)
     product_folder = str(payload.get("folder") or DEFAULT_PRODUCT_FOLDER)
 
     with BATCH_QUEUE_LOCK:
@@ -1415,7 +1453,8 @@ def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
         }
         next_index = max((int(task.get("index") or 0) for task in queue.get("tasks") or []), default=0) + 1
         added = 0
-        for path in paths:
+        for task_input in task_inputs:
+            path = task_input["path"]
             if path in existing_paths:
                 continue
             queue["tasks"].append({
@@ -1423,9 +1462,9 @@ def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
                 "index": next_index,
                 "material_path": path,
                 "product_folder": product_folder,
-                "price_multiplier": price_multiplier,
-                "price_ending": price_ending,
-                "material": material,
+                "price_multiplier": task_input["price_multiplier"],
+                "price_ending": task_input["price_ending"],
+                "material": task_input["material"],
                 "status": "pending",
                 "message": "等待执行",
                 "created_at": now_text(),
@@ -1879,6 +1918,15 @@ HTML = r"""<!doctype html>
     .batch-item { border-top: 1px solid var(--line); padding-top: 6px; }
     .batch-item.failed { color: #b42318; }
     .batch-item.succeeded { color: var(--ok); }
+    .batch-task-editor { display: grid; gap: 10px; margin-top: 12px; }
+    .batch-task-card { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: #f8fafc; }
+    .batch-task-path { font-size: 13px; font-weight: 650; word-break: break-all; margin-bottom: 8px; }
+    .batch-task-fields { display: grid; grid-template-columns: .8fr 1.1fr 1.1fr; gap: 7px; }
+    .batch-task-fields label { margin: 0; font-size: 11px; }
+    .batch-task-fields input, .batch-task-fields select { margin-top: 4px; padding-left: 7px; padding-right: 7px; }
+    .batch-default-actions { margin-top: 8px; display: none; }
+    .batch-default-actions.visible { display: block; }
+    .batch-default-actions button { width: 100%; }
     a { color: #0b61a4; word-break: break-all; }
   </style>
 </head>
@@ -1892,14 +1940,14 @@ HTML = r"""<!doctype html>
       <h2>任务设置</h2>
       <label>本地商品文件夹</label>
       <input id="folder" />
-      <label>价格倍数</label>
+      <label>价格倍数（单任务值 / 批量默认值）</label>
       <input id="priceMultiplier" inputmode="decimal" placeholder="例如 1.6" />
-      <label>价格尾数</label>
+      <label>价格尾数（单任务值 / 批量默认值）</label>
       <select id="priceEnding">
         <option value="8">小数第 2 位尾数 8</option>
         <option value="9">小数第 2 位尾数 9</option>
       </select>
-      <label>材质</label>
+      <label>材质（单任务值 / 批量默认值）</label>
       <select id="materialSelect">
         <option value="">请选择材质</option>
         <option value="黄铜">黄铜</option>
@@ -1908,13 +1956,17 @@ HTML = r"""<!doctype html>
       </select>
       <label>图片空间路径（可填写多个，每行一个）</label>
       <textarea id="materialPath" placeholder="例如：&#10;2026/8256&#10;2026/8257&#10;2026/8258"></textarea>
+      <div class="batch-task-editor" id="batchTaskEditor"></div>
+      <div class="batch-default-actions" id="batchDefaultActions">
+        <button class="secondary" id="applyBatchDefaultsBtn">把上面的默认值应用到全部任务</button>
+      </div>
       <div class="workflow">
         <button class="primary" id="batchBtn">批量加入并自动执行<small>按顺序生成上架包、打开发布页并保存草稿；单项失败会自动继续</small></button>
         <button class="primary" id="planBtn">1 生成上架包<small>读取图片空间，匹配主图/详情页/尺寸图，计算规格价格</small></button>
         <button class="secondary" id="generateTitleBtn">2 生成/选择标题<small>生成 60 字节标题候选，点“选用”保存</small></button>
         <button class="secondary" id="categoryBtn">3 打开发布页开始填充<small>进入拼多多发布页后，本地助手读取上架包填图片、规格、价格和材质</small></button>
       </div>
-      <div class="hint">批量任务共用上面的价格倍数、价格尾数和材质。单个任务仍可使用下面 3 步手动核对。</div>
+      <div class="hint">批量任务可以逐条设置价格倍数、价格尾数和材质；顶部选项只作为新增任务的默认值。单个任务仍可使用下面 3 步手动核对。</div>
       <details>
         <summary>调试工具（平时不用）</summary>
         <div class="actions">
@@ -1957,6 +2009,8 @@ HTML = r"""<!doctype html>
     const priceEnding = document.getElementById("priceEnding");
     const materialSelect = document.getElementById("materialSelect");
     const materialPath = document.getElementById("materialPath");
+    const batchTaskEditor = document.getElementById("batchTaskEditor");
+    const batchDefaultActions = document.getElementById("batchDefaultActions");
     const log = document.getElementById("log");
     const results = document.getElementById("results");
     const pill = document.getElementById("statePill");
@@ -1969,6 +2023,7 @@ HTML = r"""<!doctype html>
     const batchSummary = document.getElementById("batchSummary");
     const batchList = document.getElementById("batchList");
     let lastBatchState = "";
+    let batchTaskDrafts = new Map();
 
     function writeLog(text) { log.textContent = text; }
     function setState(text) { pill.textContent = text; }
@@ -2043,7 +2098,62 @@ HTML = r"""<!doctype html>
       }
     }
     function materialPaths() {
-      return materialPath.value.split(/[\r\n,，;；]+/).map(path => path.trim()).filter(Boolean);
+      return [...new Set(materialPath.value.split(/[\r\n,，;；]+/).map(path => path.trim()).filter(Boolean))];
+    }
+    function currentBatchDefaults() {
+      return {
+        price_multiplier: priceMultiplier.value.trim(),
+        price_ending: priceEnding.value.trim(),
+        material: materialSelect.value.trim()
+      };
+    }
+    function syncBatchTaskEditor(applyDefaults = false) {
+      const paths = materialPaths();
+      const defaults = currentBatchDefaults();
+      const nextDrafts = new Map();
+      paths.forEach(path => {
+        const existing = batchTaskDrafts.get(path);
+        nextDrafts.set(path, applyDefaults || !existing ? {...defaults} : existing);
+      });
+      batchTaskDrafts = nextDrafts;
+      batchDefaultActions.classList.toggle("visible", paths.length > 0);
+      batchTaskEditor.innerHTML = paths.map((path, index) => {
+        const task = batchTaskDrafts.get(path) || defaults;
+        return `<div class="batch-task-card" data-index="${index}">
+          <div class="batch-task-path">任务 ${index + 1}：${escapeHTML(path)}</div>
+          <div class="batch-task-fields">
+            <label>价格倍数<input class="task-price-multiplier" inputmode="decimal" value="${escapeHTML(task.price_multiplier || "")}" placeholder="如 1.8" /></label>
+            <label>价格尾数<select class="task-price-ending">
+              <option value="8"${task.price_ending === "8" ? " selected" : ""}>尾数 8</option>
+              <option value="9"${task.price_ending === "9" ? " selected" : ""}>尾数 9</option>
+            </select></label>
+            <label>材质<select class="task-material">
+              <option value=""${!task.material ? " selected" : ""}>请选择</option>
+              <option value="黄铜"${task.material === "黄铜" ? " selected" : ""}>黄铜</option>
+              <option value="锌合金"${task.material === "锌合金" ? " selected" : ""}>锌合金</option>
+              <option value="铝合金"${task.material === "铝合金" ? " selected" : ""}>铝合金</option>
+            </select></label>
+          </div>
+        </div>`;
+      }).join("");
+      batchTaskEditor.querySelectorAll(".batch-task-card").forEach(card => {
+        const path = paths[Number(card.dataset.index)];
+        const task = batchTaskDrafts.get(path);
+        card.querySelector(".task-price-multiplier").oninput = event => { task.price_multiplier = event.target.value.trim(); };
+        card.querySelector(".task-price-ending").onchange = event => { task.price_ending = event.target.value; };
+        card.querySelector(".task-material").onchange = event => { task.material = event.target.value; };
+      });
+    }
+    function batchTaskPayloads() {
+      syncBatchTaskEditor();
+      const tasks = materialPaths().map(path => ({path, ...(batchTaskDrafts.get(path) || {})}));
+      if (!tasks.length) throw new Error("请至少填写一个图片空间路径");
+      tasks.forEach(task => {
+        if (!task.price_multiplier) throw new Error(`任务 ${task.path}：请填写价格倍数`);
+        if (!task.price_ending) throw new Error(`任务 ${task.path}：请选择价格尾数`);
+        if (!task.material) throw new Error(`任务 ${task.path}：请选择材质`);
+      });
+      return tasks;
     }
     function singleMaterialPath() {
       const paths = materialPaths();
@@ -2076,6 +2186,7 @@ HTML = r"""<!doctype html>
       const tasks = batch.tasks || [];
       batchList.innerHTML = tasks.map(item => `<div class="batch-item ${escapeHTML(item.status || "")}">
         <div>#${escapeHTML(item.index || "")}｜${escapeHTML(item.material_path || "")}｜${escapeHTML(statusNames[item.status] || item.status || "")}</div>
+        <div class="progress-meta">倍数 ${escapeHTML(item.price_multiplier || "")}｜尾数 ${escapeHTML(item.price_ending || "")}｜材质 ${escapeHTML(item.material || "")}</div>
         <div class="progress-meta">${escapeHTML(item.message || "")}</div>
       </div>`).join("");
       if (batch.state === "completed" && lastBatchState !== "completed") notifyBatchFinished(batch);
@@ -2090,6 +2201,11 @@ HTML = r"""<!doctype html>
         batchState.textContent = "读取失败";
       }
     }
+    materialPath.addEventListener("input", () => syncBatchTaskEditor());
+    document.getElementById("applyBatchDefaultsBtn").onclick = () => {
+      syncBatchTaskEditor(true);
+      writeLog("已把顶部默认值应用到当前全部批量任务，你仍可逐条修改。");
+    };
     function requireTaskInputs({needPath = false} = {}) {
       const missing = [];
       if (!priceMultiplier.value.trim()) missing.push("价格倍数");
@@ -2267,20 +2383,16 @@ HTML = r"""<!doctype html>
     };
     document.getElementById("batchBtn").onclick = async () => {
       try {
-        requireTaskInputs({needPath: true});
-        const paths = materialPaths();
+        const tasks = batchTaskPayloads();
         if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
         setState("批量执行中");
-        writeLog(`正在加入 ${paths.length} 个批量任务。执行期间请保持 Chrome 已登录拼多多后台，单项失败会自动继续。`);
+        writeLog(`正在加入 ${tasks.length} 个批量任务，每项会使用各自的定价和材质。执行期间请保持 Chrome 已登录拼多多后台，单项失败会自动继续。`);
         const response = await postJSON("/api/batch-queue", {
           folder: folder.value,
-          paths,
-          price_multiplier: priceMultiplier.value,
-          price_ending: priceEnding.value,
-          material: materialSelect.value
+          tasks
         });
         setBatchView(response.data || {});
-        writeLog(`已加入 ${response.data.added || paths.length} 个任务，程序会按顺序自动处理。全部结束后会汇总提醒失败项。`);
+        writeLog(`已加入 ${response.data.added || tasks.length} 个任务，程序会按各自设置顺序处理。全部结束后会汇总提醒失败项。`);
       } catch (err) {
         writeLog(err.message);
         setState("出错");

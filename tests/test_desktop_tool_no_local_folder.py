@@ -405,6 +405,41 @@ def test_submit_batch_queue_persists_multiple_tasks(tmp_path, monkeypatch):
     assert all(item["status"] == "pending" for item in queue["tasks"])
 
 
+def test_submit_batch_queue_keeps_each_tasks_price_and_material(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop_tool, "BATCH_QUEUE_PATH", tmp_path / "batch_listing_queue.json")
+    monkeypatch.setattr(desktop_tool, "ensure_batch_worker", lambda: None)
+
+    queue = desktop_tool.submit_batch_queue({
+        "tasks": [
+            {"path": "2026/8263", "price_multiplier": "1.6", "price_ending": "8", "material": "黄铜"},
+            {"path": "2026/2732", "price_multiplier": "2.1", "price_ending": "9", "material": "锌合金"},
+        ]
+    })
+
+    assert [
+        (item["material_path"], item["price_multiplier"], item["price_ending"], item["material"])
+        for item in queue["tasks"]
+    ] == [
+        ("2026/8263", "1.6", "8", "黄铜"),
+        ("2026/2732", "2.1", "9", "锌合金"),
+    ]
+
+
+def test_batch_task_validation_identifies_the_incomplete_path():
+    try:
+        desktop_tool.normalize_batch_task_inputs({
+            "tasks": [
+                {"path": "2026/8263", "price_multiplier": "1.6", "price_ending": "8", "material": "黄铜"},
+                {"path": "2026/2732", "price_multiplier": "", "price_ending": "9", "material": "锌合金"},
+            ]
+        })
+    except ValueError as exc:
+        assert "2026/2732" in str(exc)
+        assert "价格倍数" in str(exc)
+    else:
+        raise AssertionError("缺少价格倍数的任务应该被拒绝")
+
+
 def test_plugin_task_result_requires_saved_draft_for_success():
     assert desktop_tool.plugin_task_result({
         "progress": {"stage": "done", "message": "完成", "detail": {"draftSaved": True}}
