@@ -515,8 +515,7 @@
     var controls = Array.prototype.slice.call(modal.querySelectorAll(
       'button, [role="button"], [aria-label], [class*="close"], [class*="Close"]'
     )).filter(isElementVisible);
-    var closeControl = null;
-    var bestScore = Infinity;
+    var candidates = [];
     var modalRect = modal.getBoundingClientRect();
     for (var i = 0; i < controls.length; i++) {
       var control = controls[i];
@@ -528,28 +527,49 @@
       else if (/^(关闭|close)$/i.test(aria)) score = 100;
       else if (/close/i.test(String(control.className || ''))) {
         score = 200 + Math.abs(rect.right - modalRect.right) + Math.abs(rect.top - modalRect.top);
+      } else if (rect.width <= 70 && rect.height <= 70 &&
+                 Math.abs(rect.right - modalRect.right) <= 45 && Math.abs(rect.top - modalRect.top) <= 45) {
+        score = 300 + Math.abs(rect.right - modalRect.right) + Math.abs(rect.top - modalRect.top);
       }
-      if (score < bestScore) {
-        closeControl = control;
-        bestScore = score;
-      }
+      if (score !== Infinity) candidates.push({ el: control, score: score });
     }
-    if (!closeControl) return Promise.resolve(false);
-    clickLikeUser(closeControl);
-    var startedAt = Date.now();
-    return new Promise(function (resolve) {
-      function check() {
-        if (!findMaterialVideoDialog()) {
-          resolve(true);
-          return;
+    candidates.sort(function (a, b) { return a.score - b.score; });
+    if (!candidates.length) return Promise.resolve(false);
+
+    function attempt(index) {
+      if (index >= candidates.length) return Promise.resolve(false);
+      var latest = findMaterialVideoDialog();
+      if (!latest) return Promise.resolve(true);
+      if (!latest.contains(candidates[index].el)) return attempt(index + 1);
+      clickLikeUser(candidates[index].el);
+      var startedAt = Date.now();
+      return new Promise(function (resolve) {
+        function check() {
+          if (!findMaterialVideoDialog()) {
+            resolve(true);
+            return;
+          }
+          if (Date.now() - startedAt >= 2500) {
+            resolve(false);
+            return;
+          }
+          delay(250).then(check);
         }
-        if (Date.now() - startedAt >= 5000) {
-          resolve(false);
-          return;
-        }
-        delay(300).then(check);
+        delay(250).then(check);
+      }).then(function (closed) {
+        return closed ? true : attempt(index + 1);
+      });
+    }
+
+    return attempt(0);
+  }
+
+  function closeAfterMaterialVideoFailure(delay) {
+    return closeMaterialVideoDialog(delay).then(function (closed) {
+      if (!closed) {
+        throw new Error((lastMaterialVideoError || '视频选择失败') + '；图片空间弹窗无法自动关闭，已停止后续填写');
       }
-      delay(300).then(check);
+      return false;
     });
   }
 
@@ -883,7 +903,7 @@
       .then(function (staleClosed) {
         if (!staleClosed) {
           setMaterialVideoError(labelText + '：上一次遗留的图片空间弹窗无法自动关闭');
-          return false;
+          throw new Error(lastMaterialVideoError + '，已停止后续填写');
         }
         return isMainVideo ? clickMainVideoTrigger(delay) : clickVideoTriggerNearText(labels, delay);
       })
@@ -912,7 +932,7 @@
           if (videoMode) return true;
           setMaterialVideoError(labelText + '：图片空间仍处于“图片”筛选，无法显示 mp4 视频');
           if (Toast) Toast.show('图片空间没有切换到“视频”类型', 'warning', 5000);
-          return closeMaterialVideoDialog(delay).then(function () { return false; });
+          return closeAfterMaterialVideoFailure(delay);
         }).then(function (videoMode) {
           if (!videoMode) return false;
           return navigateMaterialPathInDialog(modal, materialPath, delay);
@@ -928,12 +948,12 @@
               : '';
             setMaterialVideoError(labelText + '：在图片空间“' + materialPath + '”中未选中视频“' + videoName + '”' + missingFolders);
             if (Toast) Toast.show('未选中图片空间里的视频：' + videoName, 'warning', 5000);
-            return closeMaterialVideoDialog(delay).then(function () { return false; });
+            return closeAfterMaterialVideoFailure(delay);
           }
           return confirmMaterialVideoDialog(delay).then(function (confirmed) {
             if (!confirmed) {
               setMaterialVideoError(labelText + '：已勾选“' + videoName + '”，但图片空间弹窗没有确认关闭');
-              return closeMaterialVideoDialog(delay).then(function () { return false; });
+              return closeAfterMaterialVideoFailure(delay);
             }
             var areaFinder = isMainVideo
               ? findStrictMainImageArea
