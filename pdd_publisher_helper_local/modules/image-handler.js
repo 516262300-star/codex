@@ -333,6 +333,20 @@
     return match ? Number(match[1]) : null;
   }
 
+  var lastMaterialVideoError = '';
+
+  function setMaterialVideoError(message) {
+    lastMaterialVideoError = String(message || '');
+    if (lastMaterialVideoError) {
+      console.warn('[PDD填充插件] ' + lastMaterialVideoError);
+    }
+    return false;
+  }
+
+  function getLastMaterialVideoError() {
+    return lastMaterialVideoError;
+  }
+
   function clickLikeUser(el) {
     if (!el) return false;
     try {
@@ -512,13 +526,17 @@
   function navigateMaterialPathInDialog(modal, materialPath, delay) {
     var parts = String(materialPath || '').split(/[\\/]+/).filter(Boolean);
     if (!parts.length) return Promise.resolve(true);
-    var chain = Promise.resolve(true);
+    var chain = Promise.resolve({ ok: true, missing: [] });
     parts.forEach(function (part) {
-      chain = chain.then(function () {
+      chain = chain.then(function (result) {
         var refreshed = findMaterialVideoDialog() || modal;
         var clicked = clickBestVisibleText(refreshed, part, { exact: true, leftOnly: true });
         if (!clicked) clicked = clickBestVisibleText(refreshed, part, { exact: false, leftOnly: true });
-        return delay(clicked ? 800 : 100).then(function () { return clicked; });
+        if (!clicked) {
+          result.ok = false;
+          result.missing.push(part);
+        }
+        return delay(clicked ? 800 : 100).then(function () { return result; });
       });
     });
     return chain;
@@ -528,11 +546,17 @@
     var refreshed = findMaterialVideoDialog() || modal;
     var name = String((videoItem && (videoItem.filename || videoItem.name)) || '');
     var stem = name.replace(/\.[a-z0-9]+$/i, '');
-    var probes = [name, stem, stem.slice(0, 12), stem.slice(0, 8)].filter(function (x) { return normalizeText(x).length >= 2; });
+    var probes = [name, stem].filter(function (x) { return normalizeText(x).length >= 2; });
     var matched = null;
     for (var i = 0; i < probes.length; i++) {
-      matched = findBestVisibleTextElement(refreshed, probes[i], { exact: false, rightOnly: true });
+      matched = findBestVisibleTextElement(refreshed, probes[i], { exact: true, rightOnly: true });
       if (matched) break;
+    }
+    if (!matched) {
+      for (var pi = 0; pi < probes.length; pi++) {
+        matched = findBestVisibleTextElement(refreshed, probes[pi], { exact: false, rightOnly: true });
+        if (matched) break;
+      }
     }
 
     var modalRect = refreshed.getBoundingClientRect();
@@ -619,8 +643,22 @@
       if (!best || score > best.score) best = { el: btn, score: score };
     }
     if (!best) return Promise.resolve(false);
-    best.el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return delay(1200).then(function () { return !findMaterialVideoDialog(); });
+    clickLikeUser(best.el);
+    var startedAt = Date.now();
+    return new Promise(function (resolve) {
+      function check() {
+        if (!findMaterialVideoDialog()) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() - startedAt >= 12000) {
+          resolve(false);
+          return;
+        }
+        delay(400).then(check);
+      }
+      delay(400).then(check);
+    });
   }
 
   function selectVideoFromMaterial(videoItem, labels, options) {
@@ -631,7 +669,9 @@
       return new Promise(function (resolve) { setTimeout(resolve, ms); });
     };
     var materialPath = videoItem && videoItem.materialPath;
-    if (!materialPath) return Promise.resolve(false);
+    var videoName = String((videoItem && (videoItem.filename || videoItem.name)) || '视频文件');
+    lastMaterialVideoError = '';
+    if (!materialPath) return Promise.resolve(setMaterialVideoError('视频素材没有图片空间路径'));
     var labelText = labels[0] || '视频';
     if (Toast) Toast.show('正在从图片空间选择' + labelText + '...', 'info', 3000);
 
@@ -648,17 +688,40 @@
       .then(function () { return waitForMaterialVideoDialog(delay, 12000); })
       .then(function (modal) {
         if (!modal) {
+          setMaterialVideoError(labelText + '：未打开“图片空间”选择弹窗');
           if (Toast) Toast.show('未打开图片空间视频选择弹窗', 'warning', 4000);
           return false;
         }
-        return navigateMaterialPathInDialog(modal, materialPath, delay).then(function () {
+        var navigationResult = { ok: true, missing: [] };
+        return navigateMaterialPathInDialog(modal, materialPath, delay).then(function (result) {
+          navigationResult = result || navigationResult;
           return selectVideoCardInDialog(modal, videoItem, delay);
         }).then(function (selected) {
           if (!selected) {
-            if (Toast) Toast.show('未选中图片空间里的主图视频', 'warning', 4000);
+            var missingFolders = navigationResult.missing && navigationResult.missing.length
+              ? '；未定位到目录：' + navigationResult.missing.join('/')
+              : '';
+            setMaterialVideoError(labelText + '：在图片空间“' + materialPath + '”中未选中视频“' + videoName + '”' + missingFolders);
+            if (Toast) Toast.show('未选中图片空间里的视频：' + videoName, 'warning', 5000);
             return false;
           }
-          return confirmMaterialVideoDialog(delay);
+          return confirmMaterialVideoDialog(delay).then(function (confirmed) {
+            if (!confirmed) {
+              return setMaterialVideoError(labelText + '：已勾选“' + videoName + '”，但图片空间弹窗没有确认关闭');
+            }
+            var areaFinder = labels.indexOf('主图视频') >= 0
+              ? findPrefillMainImageArea
+              : function () { return findUploadAreaNearText(labels) || document.body; };
+            return waitForVideoUploadComplete(labels, delay, areaFinder, {
+              requireVideo: true,
+              maxWait: 45000
+            }).then(function (verified) {
+              if (!verified) {
+                return setMaterialVideoError(labelText + '：已从图片空间确认“' + videoName + '”，但发布页没有出现视频预览');
+              }
+              return true;
+            });
+          });
         }).then(function (ok) {
           if (Toast) Toast.show(ok ? '图片空间' + labelText + '已选择' : '图片空间' + labelText + '未确认，请检查页面', ok ? 'success' : 'warning', 4000);
           return !!ok;
@@ -808,10 +871,12 @@
     return best && best.el;
   }
 
-  function waitForVideoUploadComplete(labels, delay, areaFinder) {
+  function waitForVideoUploadComplete(labels, delay, areaFinder, options) {
+    options = options || {};
     var area = areaFinder ? (areaFinder() || document.body) : (findUploadAreaNearText(labels) || document.body);
     var start = Date.now();
-    var maxWait = 45000;
+    var maxWait = options.maxWait || 45000;
+    var requireVideo = options.requireVideo === true;
     var interval = 1500;
 
     return new Promise(function (resolve) {
@@ -837,7 +902,7 @@
           resolve(false);
           return;
         }
-        if (!hasLoading && elapsed > 12000) {
+        if (!requireVideo && !hasLoading && elapsed > 12000) {
           resolve(true);
           return;
         }
@@ -1615,6 +1680,7 @@
     activateMainVideoUploadTab: activateMainVideoUploadTab,
     selectVideoFromMaterial: selectVideoFromMaterial,
     selectMainVideoFromMaterial: selectMainVideoFromMaterial,
+    getLastMaterialVideoError: getLastMaterialVideoError,
     findDetailImageFileInput: findDetailImageFileInput,
     findFileInputNearText: findFileInputNearText,
     uploadVideo: uploadVideo,

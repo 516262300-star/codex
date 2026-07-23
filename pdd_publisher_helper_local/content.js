@@ -978,7 +978,10 @@
         mainVideoUploaded = !!ok;
         stepResults.mainVideo = !!ok;
         stepResults.productVideo = !!ok;
-        reportWorkbenchProgress(ok ? 'detail_main_video_done' : 'detail_main_video_skipped', ok ? '详情页：主图视频已处理' : '详情页：主图视频未处理，请检查主图视频入口');
+        if (!ok && ImageHandler.getLastMaterialVideoError) {
+          stepResults.productVideoError = ImageHandler.getLastMaterialVideoError();
+        }
+        reportWorkbenchProgress(ok ? 'detail_main_video_done' : 'detail_main_video_skipped', ok ? '详情页：主图视频已处理' : (stepResults.productVideoError || '详情页：主图视频未处理，请检查主图视频入口'));
         return Utils.delay(800);
       });
     });
@@ -994,7 +997,10 @@
             : uploadVideo(productData.productVideo, ['商品视频']);
           return productUpload.then(function (ok) {
             stepResults.productVideo = !!ok;
-            reportWorkbenchProgress(ok ? 'detail_product_video_done' : 'detail_product_video_skipped', ok ? '详情页：商品视频已上传' : '详情页：商品视频未上传，请检查入口');
+            if (!ok && ImageHandler.getLastMaterialVideoError) {
+              stepResults.productVideoError = ImageHandler.getLastMaterialVideoError();
+            }
+            reportWorkbenchProgress(ok ? 'detail_product_video_done' : 'detail_product_video_skipped', ok ? '详情页：商品视频已上传' : (stepResults.productVideoError || '详情页：商品视频未上传，请检查入口'));
           });
         });
       }
@@ -1006,7 +1012,10 @@
             : uploadVideo(productData.explainVideo, ['商品讲解视频', '讲解视频']);
           return explainUpload.then(function (ok) {
             stepResults.explainVideo = !!ok;
-            reportWorkbenchProgress(ok ? 'detail_explain_video_done' : 'detail_explain_video_skipped', ok ? '详情页：商品讲解视频已上传' : '详情页：商品讲解视频未上传，请检查入口');
+            if (!ok && ImageHandler.getLastMaterialVideoError) {
+              stepResults.explainVideoError = ImageHandler.getLastMaterialVideoError();
+            }
+            reportWorkbenchProgress(ok ? 'detail_explain_video_done' : 'detail_explain_video_skipped', ok ? '详情页：商品讲解视频已上传' : (stepResults.explainVideoError || '详情页：商品讲解视频未上传，请检查入口'));
           });
         });
       }
@@ -1124,7 +1133,7 @@
 
     return chain.then(function () {
       Logger.info('详情页填充流程完成:', stepResults);
-      reportWorkbenchProgress('done', stepResults.draftSaved ? '自动填充完成，草稿已保存' : '自动填充完成，但草稿未自动保存，请人工检查', stepResults);
+      reportWorkbenchProgress('done', stepResults.draftSaved ? '自动填充完成，草稿已保存' : (stepResults.draftSkippedReason || '自动填充完成，但草稿未自动保存，请人工检查'), stepResults);
       Toast.show('详情页填充完成', 'success', 5000);
       chrome.runtime.sendMessage({
         type: 'DETAIL_FILL_COMPLETE',

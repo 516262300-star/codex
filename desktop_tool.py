@@ -1289,6 +1289,17 @@ def plugin_task_result(status: dict[str, Any]) -> tuple[bool, bool, str]:
     detail = progress.get("detail") if isinstance(progress.get("detail"), dict) else {}
     if detail.get("draftSaved") is True:
         return True, True, message
+    reason = str(detail.get("draftSkippedReason") or "").strip()
+    video_errors = [
+        str(detail.get(key) or "").strip()
+        for key in ("productVideoError", "explainVideoError")
+    ]
+    video_errors = list(dict.fromkeys(item for item in video_errors if item))
+    if reason:
+        details = [item for item in video_errors if item not in reason]
+        return True, False, "；".join([reason, *details])
+    if video_errors:
+        return True, False, "；".join(video_errors)
     return True, False, message or "自动填充结束，但草稿没有保存成功"
 
 

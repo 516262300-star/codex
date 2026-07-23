@@ -499,6 +499,33 @@ def test_plugin_task_result_requires_saved_draft_for_success():
     assert succeeded is False
 
     assert desktop_tool.plugin_task_result({
+        "progress": {
+            "stage": "done",
+            "message": "自动填充完成，但草稿未自动保存，请人工检查",
+            "detail": {
+                "draftSaved": False,
+                "draftSkippedReason": "自动填充未完全通过检查，不保存草稿：商品视频",
+                "productVideoError": "商品视频：图片空间弹窗没有确认关闭",
+            },
+        }
+    }) == (
+        True,
+        False,
+        "自动填充未完全通过检查，不保存草稿：商品视频；商品视频：图片空间弹窗没有确认关闭",
+    )
+
+    assert desktop_tool.plugin_task_result({
+        "progress": {
+            "stage": "done",
+            "message": "完成但未保存",
+            "detail": {
+                "draftSaved": False,
+                "productVideoError": "商品视频：未打开图片空间选择弹窗",
+            },
+        }
+    }) == (True, False, "商品视频：未打开图片空间选择弹窗")
+
+    assert desktop_tool.plugin_task_result({
         "progress": {"stage": "error", "message": "图片上传失败", "ok": False}
     }) == (True, False, "图片上传失败")
 
