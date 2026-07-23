@@ -427,8 +427,15 @@ def is_material_video(file: dict[str, Any]) -> bool:
 def material_sku_sort_key(file: dict[str, Any]) -> tuple[Any, ...]:
     filename = str(file.get("filename") or "")
     sku_name = material_file_sku_name(file)
-    lookup_name, _color = parse_material_sku_lookup(sku_name)
-    return (*model_size_key(lookup_name), natural_key(filename))
+    lookup_name, color = parse_material_sku_lookup(sku_name)
+    return sku_row_sort_key(
+        {
+            "sku_name": sku_name,
+            "price_lookup_name": lookup_name,
+            "price_lookup_color": color or "",
+            "image": filename,
+        }
+    )
 
 
 PRICE_BOOK_COLOR_WORDS = (
@@ -457,6 +464,33 @@ PRICE_BOOK_COLOR_ALIASES = {
     "铬pvd": "铬PVD",
     "铬色": "铬",
 }
+
+# 公司 SKU 固定颜色顺序。新增或调整颜色时只需要修改这里。
+COMPANY_SKU_COLOR_ORDER = (
+    "古铜色",
+    "铬色",
+    "钛银",
+    "铜拉丝",
+    "哑镍拉丝",
+    "黑色",
+    "亮金",
+    "铜本色",
+)
+
+COMPANY_SKU_COLOR_ALIASES = (
+    ("古铜色", "古铜色"),
+    ("古铜", "古铜色"),
+    ("铬色", "铬色"),
+    ("钛银", "钛银"),
+    ("亮镍", "钛银"),
+    ("铜拉丝", "铜拉丝"),
+    ("哑镍拉丝", "哑镍拉丝"),
+    ("黑色", "黑色"),
+    ("亮金", "亮金"),
+    ("玫瑰金", "亮金"),
+    ("铜本色", "铜本色"),
+    ("铬", "铬色"),
+)
 
 
 def extract_price_book_color(text: str) -> str | None:
@@ -524,6 +558,54 @@ def parse_material_sku_lookup(sku_name: str) -> tuple[str, str | None]:
     return stem, None
 
 
+def company_sku_color(text: str) -> str:
+    compact = re.sub(r"[\s#/_\\\-.]+", "", str(text or ""))
+    # 铬PVD/PVD金不是固定顺序里的“铬色”，必须作为未配置颜色排在固定颜色之后。
+    if "铬PVD" in compact or "铬pvd" in compact or "PVD金" in compact or "pvd金" in compact:
+        return "铬PVD"
+    for source, display in COMPANY_SKU_COLOR_ALIASES:
+        if source in compact:
+            return display
+    return ""
+
+
+def sku_row_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    sku_name = str(row.get("sku_name") or "")
+    lookup_name = str(row.get("price_lookup_name") or row.get("price_book_name") or "")
+    color_text = " ".join(
+        str(row.get(key) or "")
+        for key in ("sku_name", "price_lookup_color", "price_book_color")
+    )
+    color = company_sku_color(color_text)
+    configured_color = color in COMPANY_SKU_COLOR_ORDER
+    color_index = COMPANY_SKU_COLOR_ORDER.index(color) if configured_color else len(COMPANY_SKU_COLOR_ORDER)
+    unknown_color = "" if configured_color else (
+        color or str(row.get("price_lookup_color") or row.get("price_book_color") or "").lower()
+    )
+    model_source = sku_name or lookup_name
+    model_match = re.search(r"(?:^|\D)(\d+)([A-Za-z]*)", model_source)
+    model_number = int(model_match.group(1)) if model_match else 999999
+    model_suffix = model_match.group(2).lower() if model_match else ""
+
+    distance_source = lookup_name or sku_name
+    if "单孔" in distance_source or "单孔" in sku_name:
+        hole_distance = 0
+    else:
+        distance_match = re.search(r"^\s*\d+[A-Za-z]*-(\d+)", distance_source)
+        if not distance_match:
+            distance_match = re.search(r"(?:^|[-_#\s])([1-9]\d{1,3})(?:mm|MM|孔距|尺寸图|尺寸)(?:\D|$)", sku_name)
+        hole_distance = int(distance_match.group(1)) if distance_match else 999999
+
+    return (
+        color_index,
+        unknown_color,
+        model_number,
+        model_suffix,
+        hole_distance,
+        natural_key(str(row.get("image") or sku_name)),
+    )
+
+
 def summarize_sku_models(sku_rows: list[dict[str, Any]], fallback: str) -> str:
     models: list[str] = []
     for row in sku_rows:
@@ -532,6 +614,7 @@ def summarize_sku_models(sku_rows: list[dict[str, Any]], fallback: str) -> str:
             models.append(match.group(0))
     if not models:
         return fallback
+    models.sort(key=model_size_key)
     if len(models) == 1:
         return models[0]
     return f"{models[0]}-{models[-1]}"
@@ -649,6 +732,7 @@ async def material_sku_rows_from_image_space(
         finally:
             await browser.close()
 
+    rows.sort(key=sku_row_sort_key)
     return rows
 
 

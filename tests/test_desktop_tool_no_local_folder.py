@@ -81,6 +81,60 @@ def test_material_sku_sort_key_orders_sizes_numerically():
     ]
 
 
+def test_sku_sort_order_is_color_then_model_then_hole_distance():
+    rows = [
+        {"sku_name": "8168-128铜本色", "price_lookup_name": "8168-128", "price_lookup_color": "铜本色"},
+        {"sku_name": "8155-96古铜色", "price_lookup_name": "8155-96", "price_lookup_color": "古铜色"},
+        {"sku_name": "8168-96古铜色", "price_lookup_name": "8168-96", "price_lookup_color": "古铜色"},
+        {"sku_name": "8155-128铜本色", "price_lookup_name": "8155-128", "price_lookup_color": "铜本色"},
+        {"sku_name": "8168-128古铜色", "price_lookup_name": "8168-128", "price_lookup_color": "古铜色"},
+        {"sku_name": "8155-96铜本色", "price_lookup_name": "8155-96", "price_lookup_color": "铜本色"},
+        {"sku_name": "8155-128古铜色", "price_lookup_name": "8155-128", "price_lookup_color": "古铜色"},
+        {"sku_name": "8168-96铜本色", "price_lookup_name": "8168-96", "price_lookup_color": "铜本色"},
+    ]
+
+    assert [row["sku_name"] for row in sorted(rows, key=desktop_tool.sku_row_sort_key)] == [
+        "8155-96古铜色",
+        "8155-128古铜色",
+        "8168-96古铜色",
+        "8168-128古铜色",
+        "8155-96铜本色",
+        "8155-128铜本色",
+        "8168-96铜本色",
+        "8168-128铜本色",
+    ]
+
+
+def test_sku_sort_uses_company_color_aliases_and_puts_unknown_colors_last():
+    rows = [
+        {"sku_name": "8155-96银色", "price_lookup_name": "8155-96", "price_lookup_color": "银色"},
+        {"sku_name": "8155-96铜本色", "price_lookup_name": "8155-96", "price_lookup_color": "铜本色"},
+        {"sku_name": "8155-96玫瑰金", "price_lookup_name": "8155-96", "price_lookup_color": "玫瑰金"},
+        {"sku_name": "8155-96亮镍", "price_lookup_name": "8155-96", "price_lookup_color": "亮镍"},
+        {"sku_name": "8155-96铬", "price_lookup_name": "8155-96", "price_lookup_color": "铬"},
+        {"sku_name": "8155-96古铜色", "price_lookup_name": "8155-96", "price_lookup_color": "古铜色"},
+    ]
+
+    assert [row["price_lookup_color"] for row in sorted(rows, key=desktop_tool.sku_row_sort_key)] == [
+        "古铜色",
+        "铬",
+        "亮镍",
+        "玫瑰金",
+        "铜本色",
+        "银色",
+    ]
+
+
+def test_summarize_sku_models_is_numeric_even_after_color_first_sorting():
+    rows = [
+        {"sku_name": "8168-96古铜色"},
+        {"sku_name": "8155-96铜本色"},
+        {"sku_name": "8168-128铜本色"},
+    ]
+
+    assert desktop_tool.summarize_sku_models(rows, "") == "8155-8168"
+
+
 def test_price_book_color_matches_short_chrome_name():
     client = ERPPriceClient.__new__(ERPPriceClient)
 
