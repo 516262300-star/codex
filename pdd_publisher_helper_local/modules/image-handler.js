@@ -976,7 +976,7 @@
   }
 
   function selectMainVideoFromMaterial(videoItem, options) {
-    return selectVideoFromMaterial(videoItem, ['主图视频', '商品主图', '轮播图'], options);
+    return selectVideoFromMaterial(videoItem, ['商品视频'], options);
   }
 
   function findDetailImageFileInput() {

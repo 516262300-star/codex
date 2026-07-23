@@ -434,17 +434,14 @@
 
   function uploadMainVideo(videoItem) {
     if (videoItem && videoItem.useMaterialPicker && videoItem.materialPath) {
-      return ImageHandler.selectMainVideoFromMaterial(videoItem, {
+      return ImageHandler.selectVideoFromMaterial(videoItem, ['商品视频'], {
         Toast: Toast,
         delay: Utils.delay
       });
     }
-    return ImageHandler.uploadVideo(videoItem, ['主图视频', '商品主图', '轮播图'], {
+    return ImageHandler.uploadVideo(videoItem, ['商品视频'], {
       Toast: Toast,
-      delay: Utils.delay,
-      prepareInput: ImageHandler.activateMainVideoUploadTab,
-      fileInputFinder: ImageHandler.findMainVideoFileInput,
-      areaFinder: ImageHandler.findPrefillMainImageArea
+      delay: Utils.delay
     });
   }
 
@@ -903,7 +900,7 @@
   function executeDetailFill(productData) {
     var steps = [];
     var stepResults = {};
-    var mainVideoUploaded = false;
+    var productVideoUploaded = false;
 
     // Step 1: 本地版只填独立生成/选用后的标题
     steps.push(function () {
@@ -969,19 +966,19 @@
       return Promise.resolve();
     });
 
-    // Step 3: 商品视频属于主图区域，优先走主图里的图片空间入口。
+    // Step 3: 从页面“商品视频”区域打开视频选择器；素材仍位于图片空间的“主图”文件夹。
     steps.push(function () {
       var productVideo = productData.productVideo;
       if (!productVideo) return Promise.resolve();
-      reportWorkbenchProgress('detail_main_video', '详情页：正在处理主图视频');
+      reportWorkbenchProgress('detail_main_video', '详情页：正在从“商品视频”区域选择视频');
       return uploadMainVideo(productVideo).then(function (ok) {
-        mainVideoUploaded = !!ok;
+        productVideoUploaded = !!ok;
         stepResults.mainVideo = !!ok;
         stepResults.productVideo = !!ok;
         if (!ok && ImageHandler.getLastMaterialVideoError) {
           stepResults.productVideoError = ImageHandler.getLastMaterialVideoError();
         }
-        reportWorkbenchProgress(ok ? 'detail_main_video_done' : 'detail_main_video_skipped', ok ? '详情页：主图视频已处理' : (stepResults.productVideoError || '详情页：主图视频未处理，请检查主图视频入口'));
+        reportWorkbenchProgress(ok ? 'detail_main_video_done' : 'detail_main_video_skipped', ok ? '详情页：商品视频已处理' : (stepResults.productVideoError || '详情页：商品视频未处理，请检查商品视频入口'));
         return Utils.delay(800);
       });
     });
@@ -989,11 +986,11 @@
     // Step 4: Fill product/explain video fields that are not already handled by main image video.
     steps.push(function () {
       var videoTasks = [];
-      if (productData.productVideo && !mainVideoUploaded) {
+      if (productData.productVideo && !productVideoUploaded) {
         videoTasks.push(function () {
           reportWorkbenchProgress('detail_product_video', '详情页：正在上传商品视频');
           var productUpload = productData.productVideo.useMaterialPicker && productData.productVideo.materialPath
-            ? ImageHandler.selectVideoFromMaterial(productData.productVideo, ['商品视频', '主图视频'], { Toast: Toast, delay: Utils.delay })
+            ? ImageHandler.selectVideoFromMaterial(productData.productVideo, ['商品视频'], { Toast: Toast, delay: Utils.delay })
             : uploadVideo(productData.productVideo, ['商品视频']);
           return productUpload.then(function (ok) {
             stepResults.productVideo = !!ok;
