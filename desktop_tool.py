@@ -1323,7 +1323,11 @@ def run_batch_task(task: dict[str, Any]) -> None:
                 str(task.get("price_ending") or "").strip() or None,
             )
         )
-        generate_title_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER))
+        custom_title = str(task.get("title") or "").strip()
+        if custom_title:
+            select_title_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER), custom_title)
+        else:
+            generate_title_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER))
         plugin_task_id = int(time.time() * 1000)
         update_batch_task(task_id, plugin_task_id=plugin_task_id, message="上架包已生成，正在打开发布页")
         asyncio.run(plugin_queue_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER), task_id=plugin_task_id))
@@ -1391,6 +1395,7 @@ def normalize_batch_task_inputs(payload: dict[str, Any]) -> list[dict[str, str]]
                 "price_multiplier": payload.get("price_multiplier"),
                 "price_ending": payload.get("price_ending"),
                 "material": payload.get("material"),
+                "title": payload.get("title"),
             }
             for path in parse_batch_material_paths(payload.get("paths") or payload.get("path"))
         ]
@@ -1406,6 +1411,7 @@ def normalize_batch_task_inputs(payload: dict[str, Any]) -> list[dict[str, str]]
         price_multiplier = str(item.get("price_multiplier") or "").strip()
         material = str(item.get("material") or "").strip()
         price_ending = str(item.get("price_ending") or "").strip()
+        title = str(item.get("title") or "").strip()
         if not price_multiplier:
             raise ValueError(f"任务 {path}：请填写价格倍数")
         try:
@@ -1417,12 +1423,15 @@ def normalize_batch_task_inputs(payload: dict[str, Any]) -> list[dict[str, str]]
             raise ValueError(f"任务 {path}：请选择有效材质")
         if price_ending not in {"8", "9"}:
             raise ValueError(f"任务 {path}：请选择价格尾数 8 或 9")
+        if title and pdd_title_byte_length(title) > 60:
+            raise ValueError(f"任务 {path}：商品标题超过 60 字节，当前 {pdd_title_byte_length(title)} 字节")
         seen_paths.add(path)
         tasks.append({
             "path": path,
             "price_multiplier": price_multiplier,
             "price_ending": price_ending,
             "material": material,
+            "title": title,
         })
     if not tasks:
         raise ValueError("没有可加入的有效任务")
@@ -1465,6 +1474,7 @@ def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
                 "price_multiplier": task_input["price_multiplier"],
                 "price_ending": task_input["price_ending"],
                 "material": task_input["material"],
+                "title": task_input["title"],
                 "status": "pending",
                 "message": "等待执行",
                 "created_at": now_text(),
@@ -1924,6 +1934,10 @@ HTML = r"""<!doctype html>
     .batch-task-fields { display: grid; grid-template-columns: .8fr 1.1fr 1.1fr; gap: 7px; }
     .batch-task-fields label { margin: 0; font-size: 11px; }
     .batch-task-fields input, .batch-task-fields select { margin-top: 4px; padding-left: 7px; padding-right: 7px; }
+    .batch-task-title { margin: 9px 0 0; font-size: 11px; }
+    .batch-task-title input { margin-top: 4px; }
+    .batch-title-count { display: block; margin-top: 3px; color: var(--muted); text-align: right; }
+    .batch-title-count.error { color: #b42318; }
     .batch-default-actions { margin-top: 8px; display: none; }
     .batch-default-actions.visible { display: block; }
     .batch-default-actions button { width: 100%; }
@@ -2100,6 +2114,9 @@ HTML = r"""<!doctype html>
     function materialPaths() {
       return [...new Set(materialPath.value.split(/[\r\n,，;；]+/).map(path => path.trim()).filter(Boolean))];
     }
+    function pddTitleByteLength(text) {
+      return Array.from(String(text || "")).reduce((total, ch) => total + (ch.charCodeAt(0) < 128 ? 1 : 2), 0);
+    }
     function currentBatchDefaults() {
       return {
         price_multiplier: priceMultiplier.value.trim(),
@@ -2113,7 +2130,8 @@ HTML = r"""<!doctype html>
       const nextDrafts = new Map();
       paths.forEach(path => {
         const existing = batchTaskDrafts.get(path);
-        nextDrafts.set(path, applyDefaults || !existing ? {...defaults} : existing);
+        if (applyDefaults) nextDrafts.set(path, {...(existing || {title: ""}), ...defaults});
+        else nextDrafts.set(path, existing || {...defaults, title: ""});
       });
       batchTaskDrafts = nextDrafts;
       batchDefaultActions.classList.toggle("visible", paths.length > 0);
@@ -2134,6 +2152,10 @@ HTML = r"""<!doctype html>
               <option value="铝合金"${task.material === "铝合金" ? " selected" : ""}>铝合金</option>
             </select></label>
           </div>
+          <label class="batch-task-title">商品标题（留空则自动使用推荐标题）
+            <input class="task-title" value="${escapeHTML(task.title || "")}" placeholder="可为这条任务单独填写标题" />
+            <small class="batch-title-count${pddTitleByteLength(task.title) > 60 ? " error" : ""}">${pddTitleByteLength(task.title)} / 60 字节</small>
+          </label>
         </div>`;
       }).join("");
       batchTaskEditor.querySelectorAll(".batch-task-card").forEach(card => {
@@ -2142,6 +2164,13 @@ HTML = r"""<!doctype html>
         card.querySelector(".task-price-multiplier").oninput = event => { task.price_multiplier = event.target.value.trim(); };
         card.querySelector(".task-price-ending").onchange = event => { task.price_ending = event.target.value; };
         card.querySelector(".task-material").onchange = event => { task.material = event.target.value; };
+        card.querySelector(".task-title").oninput = event => {
+          task.title = event.target.value.trim();
+          const count = card.querySelector(".batch-title-count");
+          const length = pddTitleByteLength(event.target.value);
+          count.textContent = `${length} / 60 字节`;
+          count.classList.toggle("error", length > 60);
+        };
       });
     }
     function batchTaskPayloads() {
@@ -2152,6 +2181,7 @@ HTML = r"""<!doctype html>
         if (!task.price_multiplier) throw new Error(`任务 ${task.path}：请填写价格倍数`);
         if (!task.price_ending) throw new Error(`任务 ${task.path}：请选择价格尾数`);
         if (!task.material) throw new Error(`任务 ${task.path}：请选择材质`);
+        if (task.title && pddTitleByteLength(task.title) > 60) throw new Error(`任务 ${task.path}：商品标题超过 60 字节`);
       });
       return tasks;
     }
@@ -2187,6 +2217,7 @@ HTML = r"""<!doctype html>
       batchList.innerHTML = tasks.map(item => `<div class="batch-item ${escapeHTML(item.status || "")}">
         <div>#${escapeHTML(item.index || "")}｜${escapeHTML(item.material_path || "")}｜${escapeHTML(statusNames[item.status] || item.status || "")}</div>
         <div class="progress-meta">倍数 ${escapeHTML(item.price_multiplier || "")}｜尾数 ${escapeHTML(item.price_ending || "")}｜材质 ${escapeHTML(item.material || "")}</div>
+        <div class="progress-meta">标题：${escapeHTML(item.title || "自动推荐")}</div>
         <div class="progress-meta">${escapeHTML(item.message || "")}</div>
       </div>`).join("");
       if (batch.state === "completed" && lastBatchState !== "completed") notifyBatchFinished(batch);

@@ -411,17 +411,17 @@ def test_submit_batch_queue_keeps_each_tasks_price_and_material(tmp_path, monkey
 
     queue = desktop_tool.submit_batch_queue({
         "tasks": [
-            {"path": "2026/8263", "price_multiplier": "1.6", "price_ending": "8", "material": "黄铜"},
-            {"path": "2026/2732", "price_multiplier": "2.1", "price_ending": "9", "material": "锌合金"},
+            {"path": "2026/8263", "price_multiplier": "1.6", "price_ending": "8", "material": "黄铜", "title": "任务一自定义标题"},
+            {"path": "2026/2732", "price_multiplier": "2.1", "price_ending": "9", "material": "锌合金", "title": ""},
         ]
     })
 
     assert [
-        (item["material_path"], item["price_multiplier"], item["price_ending"], item["material"])
+        (item["material_path"], item["price_multiplier"], item["price_ending"], item["material"], item["title"])
         for item in queue["tasks"]
     ] == [
-        ("2026/8263", "1.6", "8", "黄铜"),
-        ("2026/2732", "2.1", "9", "锌合金"),
+        ("2026/8263", "1.6", "8", "黄铜", "任务一自定义标题"),
+        ("2026/2732", "2.1", "9", "锌合金", ""),
     ]
 
 
@@ -438,6 +438,53 @@ def test_batch_task_validation_identifies_the_incomplete_path():
         assert "价格倍数" in str(exc)
     else:
         raise AssertionError("缺少价格倍数的任务应该被拒绝")
+
+
+def test_batch_task_validation_rejects_title_over_60_bytes():
+    try:
+        desktop_tool.normalize_batch_task_inputs({
+            "tasks": [{
+                "path": "2026/8263",
+                "price_multiplier": "1.6",
+                "price_ending": "8",
+                "material": "黄铜",
+                "title": "拉" * 31,
+            }]
+        })
+    except ValueError as exc:
+        assert "2026/8263" in str(exc)
+        assert "超过 60 字节" in str(exc)
+    else:
+        raise AssertionError("超过 60 字节的标题应该被拒绝")
+
+
+def test_run_batch_task_uses_its_custom_title(monkeypatch):
+    selected = []
+
+    async def fake_prepare(*_args, **_kwargs):
+        return {}
+
+    async def fake_queue(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(desktop_tool, "prepare_listing_payload", fake_prepare)
+    monkeypatch.setattr(desktop_tool, "plugin_queue_payload", fake_queue)
+    monkeypatch.setattr(desktop_tool, "select_title_payload", lambda folder, title: selected.append((folder, title)))
+    monkeypatch.setattr(desktop_tool, "generate_title_payload", lambda _folder: (_ for _ in ()).throw(AssertionError("不应自动生成标题")))
+    monkeypatch.setattr(desktop_tool, "wait_for_plugin_batch_task", lambda *_args, **_kwargs: (True, "完成"))
+    monkeypatch.setattr(desktop_tool, "update_batch_task", lambda *_args, **_kwargs: None)
+
+    desktop_tool.run_batch_task({
+        "id": "task-1",
+        "product_folder": "product-folder",
+        "material_path": "2026/8263",
+        "price_multiplier": "1.6",
+        "price_ending": "8",
+        "material": "黄铜",
+        "title": "这条任务自己的标题",
+    })
+
+    assert selected == [("product-folder", "这条任务自己的标题")]
 
 
 def test_plugin_task_result_requires_saved_draft_for_success():
