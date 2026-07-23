@@ -568,7 +568,7 @@
       if (exact ? text !== target : text.indexOf(target) < 0) continue;
       var rect = el.getBoundingClientRect();
       if (options.leftOnly && rect.left > modalRect.left + modalRect.width * 0.38) continue;
-      if (options.rightOnly && rect.left < modalRect.left + modalRect.width * 0.30) continue;
+      if (options.rightOnly && rect.left < modalRect.left + modalRect.width * 0.22) continue;
       var score = text.length + rect.width / 100 + rect.height / 100 + Math.max(0, rect.top - modalRect.top) / 1000;
       if (!best || score < best.score) best = { el: el, score: score };
     }
@@ -711,16 +711,64 @@
       }
     }
 
+    if (!matched) {
+      var modalBounds = refreshed.getBoundingClientRect();
+      var normalizedName = normalizeText(name);
+      var normalizedStem = normalizeText(stem);
+      var nameNodes = Array.prototype.slice.call(refreshed.querySelectorAll(
+        '[title], [aria-label], [data-name], [data-filename], [data-file-name], span, div, p'
+      ));
+      var bestNameMatch = null;
+      for (var ni = 0; ni < nameNodes.length; ni++) {
+        var node = nameNodes[ni];
+        if (!isElementVisible(node)) continue;
+        var nodeRect = node.getBoundingClientRect();
+        if (nodeRect.left < modalBounds.left + modalBounds.width * 0.22) continue;
+        if (nodeRect.width > 500 || nodeRect.height > 120) continue;
+        var values = [
+          node.getAttribute('title'),
+          node.getAttribute('aria-label'),
+          node.getAttribute('data-name'),
+          node.getAttribute('data-filename'),
+          node.getAttribute('data-file-name'),
+          node.innerText,
+          node.textContent
+        ].map(normalizeText).filter(Boolean);
+        var nodeScore = Infinity;
+        for (var vi = 0; vi < values.length; vi++) {
+          var value = values[vi];
+          if ((normalizedName && value === normalizedName) || (normalizedStem && value === normalizedStem)) {
+            nodeScore = Math.min(nodeScore, vi < 5 ? 0 : 20);
+            continue;
+          }
+          if ((normalizedName && value.includes(normalizedName)) || (normalizedStem && value.includes(normalizedStem))) {
+            nodeScore = Math.min(nodeScore, vi < 5 ? 40 : 60);
+            continue;
+          }
+          var visiblePrefix = value.replace(/(?:\.{3}|…).*$/, '');
+          if (visiblePrefix.length >= 8 &&
+              ((normalizedName && normalizedName.indexOf(visiblePrefix) === 0) ||
+               (normalizedStem && normalizedStem.indexOf(visiblePrefix) === 0))) {
+            nodeScore = Math.min(nodeScore, 200 - Math.min(100, visiblePrefix.length));
+          }
+        }
+        if (nodeScore === Infinity) continue;
+        nodeScore += nodeRect.width / 100 + nodeRect.height / 100;
+        if (!bestNameMatch || nodeScore < bestNameMatch.score) {
+          bestNameMatch = { el: node, score: nodeScore };
+        }
+      }
+      matched = bestNameMatch && bestNameMatch.el;
+    }
+
     var modalRect = refreshed.getBoundingClientRect();
     var candidates = [];
     var current = matched;
     for (var depth = 0; current && current !== refreshed && depth < 9; depth++, current = current.parentElement) {
       var currentRect = current.getBoundingClientRect();
-      var currentText = normalizeText(current.innerText || current.textContent || '');
       if (currentRect.left >= modalRect.left + modalRect.width * 0.25 &&
           currentRect.width >= 80 && currentRect.width <= 300 &&
-          currentRect.height >= 100 && currentRect.height <= 360 &&
-          (!stem || currentText.includes(normalizeText(stem)))) {
+          currentRect.height >= 100 && currentRect.height <= 360) {
         candidates.push({
           el: current,
           score: Math.abs(currentRect.width - 150) + Math.abs(currentRect.height - 220)
