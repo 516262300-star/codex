@@ -35,11 +35,16 @@ SESSION_PID_PATH = ROOT / ".tmp_tool" / "pdd_session.pid"
 COMMAND_PATH = ROOT / ".tmp_tool" / "pdd_category_command.json"
 COMMAND_STATUS_PATH = ROOT / ".tmp_tool" / "pdd_category_command_status.json"
 PLUGIN_PRODUCT_STATUS_PATH = ROOT / ".tmp_tool" / "plugin_product_status.json"
+BATCH_QUEUE_PATH = ROOT / ".tmp_tool" / "batch_listing_queue.json"
 DRAFT_HISTORY_PATH = ROOT / ".tmp_tool" / "saved_draft_history.json"
 MATERIAL_REQUEST_PATH = ROOT / ".tmp_tool" / "plugin_material_request.json"
 MATERIAL_RESPONSE_PATH = ROOT / ".tmp_tool" / "plugin_material_response.json"
 TITLE_CACHE_PATH = ROOT / ".tmp_tool" / "title_candidates.json"
 PLUGIN_STATUS_LOCK = threading.Lock()
+BATCH_QUEUE_LOCK = threading.RLock()
+BATCH_WORKER_LOCK = threading.Lock()
+BATCH_WORKER_THREAD: threading.Thread | None = None
+BATCH_TASK_TIMEOUT_SECONDS = 45 * 60
 MATERIAL_OPTIONS = ("黄铜", "锌合金", "铝合金")
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 VIDEO_EXTENSIONS = {"mp4", "mov", "webm", "m4v"}
@@ -1088,7 +1093,7 @@ async def auto_fill_listing_payload(product_folder: str) -> dict[str, Any]:
     }
 
 
-async def plugin_queue_payload(product_folder: str) -> dict[str, Any]:
+async def plugin_queue_payload(product_folder: str, task_id: int | None = None) -> dict[str, Any]:
     package_path = ROOT / ".tmp_tool" / "listing_asset_package.json"
     if not package_path.exists():
         raise FileNotFoundError("还没有上架包。请先点第 1 步“生成上架包”。")
@@ -1098,7 +1103,7 @@ async def plugin_queue_payload(product_folder: str) -> dict[str, Any]:
     if not cached_recommended_title(folder):
         generate_title_payload(str(folder))
 
-    task_id = int(time.time())
+    task_id = task_id or int(time.time() * 1000)
     url = "https://mms.pinduoduo.com/goods/category"
     write_plugin_status({
         "id": task_id,
@@ -1154,6 +1159,290 @@ def write_plugin_status(status: dict[str, Any]) -> None:
     with PLUGIN_STATUS_LOCK:
         tmp_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(PLUGIN_PRODUCT_STATUS_PATH)
+
+
+def now_text() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def empty_batch_queue() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "batch_id": "",
+        "state": "idle",
+        "created_at": "",
+        "updated_at": now_text(),
+        "completed_at": "",
+        "tasks": [],
+    }
+
+
+def _read_batch_queue_unlocked() -> dict[str, Any]:
+    if not BATCH_QUEUE_PATH.exists():
+        return empty_batch_queue()
+    try:
+        queue = json.loads(BATCH_QUEUE_PATH.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError):
+        return empty_batch_queue()
+    if not isinstance(queue, dict):
+        return empty_batch_queue()
+    if not isinstance(queue.get("tasks"), list):
+        queue["tasks"] = []
+    return queue
+
+
+def read_batch_queue() -> dict[str, Any]:
+    with BATCH_QUEUE_LOCK:
+        return _read_batch_queue_unlocked()
+
+
+def _write_batch_queue_unlocked(queue: dict[str, Any]) -> None:
+    queue["updated_at"] = now_text()
+    BATCH_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = BATCH_QUEUE_PATH.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(BATCH_QUEUE_PATH)
+
+
+def write_batch_queue(queue: dict[str, Any]) -> None:
+    with BATCH_QUEUE_LOCK:
+        _write_batch_queue_unlocked(queue)
+
+
+def batch_queue_view(queue: dict[str, Any] | None = None) -> dict[str, Any]:
+    queue = queue or read_batch_queue()
+    tasks = [item for item in queue.get("tasks") or [] if isinstance(item, dict)]
+    counts = {
+        name: sum(1 for item in tasks if item.get("status") == name)
+        for name in ("pending", "preparing", "queued", "running", "succeeded", "failed")
+    }
+    result = dict(queue)
+    result["tasks"] = tasks
+    result["summary"] = {
+        "total": len(tasks),
+        "completed": counts["succeeded"] + counts["failed"],
+        "succeeded": counts["succeeded"],
+        "failed": counts["failed"],
+        "waiting": counts["pending"] + counts["preparing"] + counts["queued"] + counts["running"],
+    }
+    result["failed_tasks"] = [
+        {
+            "id": item.get("id"),
+            "material_path": item.get("material_path"),
+            "message": item.get("message") or "未知错误",
+        }
+        for item in tasks
+        if item.get("status") == "failed"
+    ]
+    return result
+
+
+def parse_batch_material_paths(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = re.split(r"[\r\n,，;；]+", str(value or ""))
+    paths: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        path = raw.strip().strip('"\'')
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def update_batch_task(task_id: str, **changes: Any) -> dict[str, Any] | None:
+    with BATCH_QUEUE_LOCK:
+        queue = _read_batch_queue_unlocked()
+        for task in queue.get("tasks") or []:
+            if str(task.get("id")) != str(task_id):
+                continue
+            task.update(changes)
+            _write_batch_queue_unlocked(queue)
+            return dict(task)
+    return None
+
+
+def finish_batch_if_done() -> bool:
+    with BATCH_QUEUE_LOCK:
+        queue = _read_batch_queue_unlocked()
+        tasks = queue.get("tasks") or []
+        if any(task.get("status") not in {"succeeded", "failed"} for task in tasks):
+            return False
+        if tasks and queue.get("state") != "completed":
+            queue["state"] = "completed"
+            queue["completed_at"] = now_text()
+            _write_batch_queue_unlocked(queue)
+        return True
+
+
+def plugin_task_result(status: dict[str, Any]) -> tuple[bool, bool, str]:
+    progress = status.get("progress") if isinstance(status.get("progress"), dict) else {}
+    stage = str(progress.get("stage") or "")
+    message = str(progress.get("message") or stage or "等待插件执行")
+    if stage == "error" or progress.get("ok") is False:
+        return True, False, message
+    if stage != "done":
+        return False, False, message
+    detail = progress.get("detail") if isinstance(progress.get("detail"), dict) else {}
+    if detail.get("draftSaved") is True:
+        return True, True, message
+    return True, False, message or "自动填充结束，但草稿没有保存成功"
+
+
+def wait_for_plugin_batch_task(task_id: str, plugin_task_id: int, timeout_s: int = BATCH_TASK_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    deadline = time.monotonic() + timeout_s
+    marked_running = False
+    while time.monotonic() < deadline:
+        status = read_plugin_status()
+        if str(status.get("id")) == str(plugin_task_id):
+            done, succeeded, message = plugin_task_result(status)
+            progress = status.get("progress") if isinstance(status.get("progress"), dict) else {}
+            stage = str(progress.get("stage") or "")
+            if not marked_running and stage not in {"", "queued"}:
+                update_batch_task(task_id, status="running", message=message)
+                marked_running = True
+            if done:
+                return succeeded, message
+        time.sleep(1)
+    return False, f"等待插件执行超过 {timeout_s // 60} 分钟，已跳过该任务"
+
+
+def run_batch_task(task: dict[str, Any]) -> None:
+    task_id = str(task["id"])
+    update_batch_task(task_id, status="preparing", started_at=task.get("started_at") or now_text(), message="正在读取图片空间并查询 ERP 价格")
+    try:
+        asyncio.run(
+            prepare_listing_payload(
+                str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER),
+                str(task.get("material_path") or ""),
+                str(task.get("price_multiplier") or "").strip() or None,
+                str(task.get("material") or "").strip() or None,
+                str(task.get("price_ending") or "").strip() or None,
+            )
+        )
+        generate_title_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER))
+        plugin_task_id = int(time.time() * 1000)
+        update_batch_task(task_id, plugin_task_id=plugin_task_id, message="上架包已生成，正在打开发布页")
+        asyncio.run(plugin_queue_payload(str(task.get("product_folder") or DEFAULT_PRODUCT_FOLDER), task_id=plugin_task_id))
+        update_batch_task(task_id, status="queued", message="等待 Chrome 插件接收任务")
+        succeeded, message = wait_for_plugin_batch_task(task_id, plugin_task_id)
+        update_batch_task(
+            task_id,
+            status="succeeded" if succeeded else "failed",
+            message=message if message else ("草稿已保存" if succeeded else "任务失败"),
+            finished_at=now_text(),
+        )
+    except Exception as exc:
+        update_batch_task(task_id, status="failed", message=str(exc), finished_at=now_text())
+
+
+def batch_worker_loop() -> None:
+    global BATCH_WORKER_THREAD
+    try:
+        while True:
+            queue = read_batch_queue()
+            tasks = [task for task in queue.get("tasks") or [] if isinstance(task, dict)]
+            active = next((task for task in tasks if task.get("status") in {"queued", "running"}), None)
+            if active and active.get("plugin_task_id"):
+                succeeded, message = wait_for_plugin_batch_task(str(active["id"]), int(active["plugin_task_id"]))
+                update_batch_task(
+                    str(active["id"]),
+                    status="succeeded" if succeeded else "failed",
+                    message=message,
+                    finished_at=now_text(),
+                )
+                continue
+            task = next((item for item in tasks if item.get("status") in {"pending", "preparing"}), None)
+            if not task:
+                finish_batch_if_done()
+                return
+            run_batch_task(task)
+    finally:
+        with BATCH_WORKER_LOCK:
+            BATCH_WORKER_THREAD = None
+        # 如果提交请求恰好发生在线程退出瞬间，重新检查一次，避免新任务滞留。
+        if any(task.get("status") not in {"succeeded", "failed"} for task in read_batch_queue().get("tasks") or []):
+            ensure_batch_worker()
+
+
+def ensure_batch_worker() -> None:
+    global BATCH_WORKER_THREAD
+    with BATCH_WORKER_LOCK:
+        if BATCH_WORKER_THREAD and BATCH_WORKER_THREAD.is_alive():
+            return
+        queue = read_batch_queue()
+        if not any(task.get("status") not in {"succeeded", "failed"} for task in queue.get("tasks") or []):
+            return
+        BATCH_WORKER_THREAD = threading.Thread(target=batch_worker_loop, name="pdd-batch-worker", daemon=True)
+        BATCH_WORKER_THREAD.start()
+
+
+def submit_batch_queue(payload: dict[str, Any]) -> dict[str, Any]:
+    paths = parse_batch_material_paths(payload.get("paths") or payload.get("path"))
+    if not paths:
+        raise ValueError("请至少填写一个图片空间路径；多个路径请每行填写一个")
+    price_multiplier = str(payload.get("price_multiplier") or "").strip()
+    material = str(payload.get("material") or "").strip()
+    price_ending = str(payload.get("price_ending") or "").strip()
+    if not price_multiplier:
+        raise ValueError("请先填写价格倍数")
+    if material not in MATERIAL_OPTIONS:
+        raise ValueError("请先选择有效材质")
+    if price_ending not in {"8", "9"}:
+        raise ValueError("请先选择价格尾数：8 或 9")
+    product_folder = str(payload.get("folder") or DEFAULT_PRODUCT_FOLDER)
+
+    with BATCH_QUEUE_LOCK:
+        queue = _read_batch_queue_unlocked()
+        unfinished = any(task.get("status") not in {"succeeded", "failed"} for task in queue.get("tasks") or [])
+        if not unfinished:
+            batch_id = str(int(time.time() * 1000))
+            queue = empty_batch_queue()
+            queue.update({"batch_id": batch_id, "state": "running", "created_at": now_text(), "completed_at": ""})
+        else:
+            batch_id = str(queue.get("batch_id") or int(time.time() * 1000))
+            queue["batch_id"] = batch_id
+            queue["state"] = "running"
+            queue["completed_at"] = ""
+
+        existing_paths = {
+            str(task.get("material_path") or "")
+            for task in queue.get("tasks") or []
+            if task.get("status") not in {"succeeded", "failed"}
+        }
+        next_index = max((int(task.get("index") or 0) for task in queue.get("tasks") or []), default=0) + 1
+        added = 0
+        for path in paths:
+            if path in existing_paths:
+                continue
+            queue["tasks"].append({
+                "id": f"{batch_id}-{next_index}",
+                "index": next_index,
+                "material_path": path,
+                "product_folder": product_folder,
+                "price_multiplier": price_multiplier,
+                "price_ending": price_ending,
+                "material": material,
+                "status": "pending",
+                "message": "等待执行",
+                "created_at": now_text(),
+                "started_at": "",
+                "finished_at": "",
+            })
+            existing_paths.add(path)
+            next_index += 1
+            added += 1
+        if not added:
+            raise ValueError("这些路径已在当前待执行队列中")
+        _write_batch_queue_unlocked(queue)
+
+    ensure_batch_worker()
+    result = batch_queue_view()
+    result["added"] = added
+    return result
 
 
 def read_saved_draft_history() -> dict[str, Any]:
@@ -1284,6 +1573,9 @@ def enrich_latest_saved_draft(progress: dict[str, Any]) -> None:
 
 def update_plugin_progress(payload: dict[str, Any]) -> dict[str, Any]:
     status = read_plugin_status()
+    payload_task_id = str(payload.get("task_id") or "")
+    if payload_task_id and payload_task_id != str(status.get("id") or ""):
+        return {"code": 0, "msg": "ignored stale task progress", "data": status}
     progress = {
         "stage": str(payload.get("stage") or ""),
         "message": str(payload.get("message") or ""),
@@ -1292,6 +1584,8 @@ def update_plugin_progress(payload: dict[str, Any]) -> dict[str, Any]:
         "ok": bool(payload.get("ok", True)),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if payload_task_id:
+        progress["task_id"] = payload_task_id
     if "detail" in payload:
         progress["detail"] = payload.get("detail")
     status["progress"] = progress
@@ -1423,6 +1717,7 @@ def plugin_product_store_list() -> dict[str, Any]:
     status = read_plugin_status()
     package = json.loads(package_path.read_text(encoding="utf-8"))
     product_data = plugin_product_json(package)
+    product_data["_workbenchTaskId"] = int(status.get("id") or int(time.time() * 1000))
     item = {
         "id": int(status.get("id") or int(time.time())),
         "product_name": product_data.get("title") or str(package.get("erp_model") or "待上架商品"),
@@ -1498,15 +1793,17 @@ HTML = r"""<!doctype html>
       color: var(--muted);
       margin: 14px 0 6px;
     }
-    input, select {
+    input, select, textarea {
       width: 100%;
-      height: 38px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 0 10px;
+      padding: 9px 10px;
       font-size: 13px;
       background: #fff;
+      font-family: inherit;
     }
+    input, select { height: 38px; padding-top: 0; padding-bottom: 0; }
+    textarea { min-height: 92px; resize: vertical; line-height: 1.5; }
     button {
       height: 38px;
       border: 0;
@@ -1578,6 +1875,10 @@ HTML = r"""<!doctype html>
     .progress-meta { color: var(--muted); margin-top: 4px; word-break: break-all; }
     .draft-history-row { margin-top: 4px; }
     .draft-history-ids { color: #334155; font-family: Consolas, monospace; }
+    .batch-list { margin-top: 8px; display: grid; gap: 6px; }
+    .batch-item { border-top: 1px solid var(--line); padding-top: 6px; }
+    .batch-item.failed { color: #b42318; }
+    .batch-item.succeeded { color: var(--ok); }
     a { color: #0b61a4; word-break: break-all; }
   </style>
 </head>
@@ -1605,14 +1906,15 @@ HTML = r"""<!doctype html>
         <option value="锌合金">锌合金</option>
         <option value="铝合金">铝合金</option>
       </select>
-      <label>图片空间路径</label>
-      <input id="materialPath" placeholder="例如 2026/8256-8257-8258-8259" />
+      <label>图片空间路径（可填写多个，每行一个）</label>
+      <textarea id="materialPath" placeholder="例如：&#10;2026/8256&#10;2026/8257&#10;2026/8258"></textarea>
       <div class="workflow">
+        <button class="primary" id="batchBtn">批量加入并自动执行<small>按顺序生成上架包、打开发布页并保存草稿；单项失败会自动继续</small></button>
         <button class="primary" id="planBtn">1 生成上架包<small>读取图片空间，匹配主图/详情页/尺寸图，计算规格价格</small></button>
         <button class="secondary" id="generateTitleBtn">2 生成/选择标题<small>生成 60 字节标题候选，点“选用”保存</small></button>
         <button class="secondary" id="categoryBtn">3 打开发布页开始填充<small>进入拼多多发布页后，本地助手读取上架包填图片、规格、价格和材质</small></button>
       </div>
-      <div class="hint">正常上架只用上面 3 步。下面是排查问题时才用的工具。</div>
+      <div class="hint">批量任务共用上面的价格倍数、价格尾数和材质。单个任务仍可使用下面 3 步手动核对。</div>
       <details>
         <summary>调试工具（平时不用）</summary>
         <div class="actions">
@@ -1634,6 +1936,11 @@ HTML = r"""<!doctype html>
         <div class="progress-message" id="progressMessage">还没有收到插件心跳。</div>
         <div class="progress-meta" id="progressMeta">开始第三步后，这里会显示当前执行到哪一步。</div>
         <div class="progress-meta" id="draftHistory">累计保存草稿：读取中。</div>
+      </div>
+      <div class="progress-box">
+        <div class="progress-head"><span>批量任务队列</span><span id="batchState">未开始</span></div>
+        <div class="progress-message" id="batchSummary">可以一次填写多个图片空间路径。</div>
+        <div class="batch-list" id="batchList"></div>
       </div>
     </section>
     <section>
@@ -1658,6 +1965,10 @@ HTML = r"""<!doctype html>
     const progressMessage = document.getElementById("progressMessage");
     const progressMeta = document.getElementById("progressMeta");
     const draftHistory = document.getElementById("draftHistory");
+    const batchState = document.getElementById("batchState");
+    const batchSummary = document.getElementById("batchSummary");
+    const batchList = document.getElementById("batchList");
+    let lastBatchState = "";
 
     function writeLog(text) { log.textContent = text; }
     function setState(text) { pill.textContent = text; }
@@ -1729,6 +2040,54 @@ HTML = r"""<!doctype html>
         setDraftHistoryView(data.data || {});
       } catch (_) {
         draftHistory.textContent = "累计保存草稿：读取失败。";
+      }
+    }
+    function materialPaths() {
+      return materialPath.value.split(/[\r\n,，;；]+/).map(path => path.trim()).filter(Boolean);
+    }
+    function singleMaterialPath() {
+      const paths = materialPaths();
+      if (paths.length !== 1) throw new Error("单任务操作只能填写一个图片空间路径；多个路径请点“批量加入并自动执行”");
+      return paths[0];
+    }
+    function notifyBatchFinished(batch) {
+      const summary = batch.summary || {};
+      const failed = batch.failed_tasks || [];
+      const storageKey = `pdd-batch-notified-${batch.batch_id || "unknown"}`;
+      if (localStorage.getItem(storageKey)) return;
+      localStorage.setItem(storageKey, "1");
+      const failedText = failed.length
+        ? `失败 ${summary.failed || failed.length} 个：${failed.map(item => item.material_path).join("、")}`
+        : `全部 ${summary.succeeded || 0} 个任务均已完成`;
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("拼多多批量任务已完成", {body: failedText});
+      } else if (failed.length) {
+        window.alert(`拼多多批量任务已完成。${failedText}。请在批量任务队列查看失败原因。`);
+      }
+    }
+    function setBatchView(batch) {
+      const summary = batch.summary || {total: 0, completed: 0, succeeded: 0, failed: 0, waiting: 0};
+      const stateNames = {idle: "未开始", running: "执行中", completed: "已完成"};
+      const statusNames = {pending: "等待", preparing: "准备中", queued: "已排队", running: "填充中", succeeded: "成功", failed: "失败"};
+      batchState.textContent = stateNames[batch.state] || batch.state || "未开始";
+      batchSummary.textContent = summary.total
+        ? `共 ${summary.total} 个｜已完成 ${summary.completed}｜成功 ${summary.succeeded}｜失败 ${summary.failed}｜待处理 ${summary.waiting}`
+        : "可以一次填写多个图片空间路径。";
+      const tasks = batch.tasks || [];
+      batchList.innerHTML = tasks.map(item => `<div class="batch-item ${escapeHTML(item.status || "")}">
+        <div>#${escapeHTML(item.index || "")}｜${escapeHTML(item.material_path || "")}｜${escapeHTML(statusNames[item.status] || item.status || "")}</div>
+        <div class="progress-meta">${escapeHTML(item.message || "")}</div>
+      </div>`).join("");
+      if (batch.state === "completed" && lastBatchState !== "completed") notifyBatchFinished(batch);
+      lastBatchState = batch.state || "";
+    }
+    async function refreshBatch() {
+      try {
+        const response = await fetch("/api/batch-queue");
+        const data = await response.json();
+        setBatchView(data.data || {});
+      } catch (_) {
+        batchState.textContent = "读取失败";
       }
     }
     function requireTaskInputs({needPath = false} = {}) {
@@ -1906,11 +2265,32 @@ HTML = r"""<!doctype html>
         setState("出错");
       }
     };
+    document.getElementById("batchBtn").onclick = async () => {
+      try {
+        requireTaskInputs({needPath: true});
+        const paths = materialPaths();
+        if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+        setState("批量执行中");
+        writeLog(`正在加入 ${paths.length} 个批量任务。执行期间请保持 Chrome 已登录拼多多后台，单项失败会自动继续。`);
+        const response = await postJSON("/api/batch-queue", {
+          folder: folder.value,
+          paths,
+          price_multiplier: priceMultiplier.value,
+          price_ending: priceEnding.value,
+          material: materialSelect.value
+        });
+        setBatchView(response.data || {});
+        writeLog(`已加入 ${response.data.added || paths.length} 个任务，程序会按顺序自动处理。全部结束后会汇总提醒失败项。`);
+      } catch (err) {
+        writeLog(err.message);
+        setState("出错");
+      }
+    };
     document.getElementById("materialBtn").onclick = async () => {
       try {
         setState("等待扫码");
         writeLog("正在把图片空间读取任务交给当前 Chrome 插件；不会打开独立测试浏览器。请确认当前 Chrome 已登录拼多多后台。");
-        const data = await postJSON("/api/material", {path: materialPath.value});
+        const data = await postJSON("/api/material", {path: singleMaterialPath()});
         renderMaterial(data);
         writeLog("图片空间读取完成。");
         setState("已完成");
@@ -1924,7 +2304,7 @@ HTML = r"""<!doctype html>
         requireTaskInputs({needPath: true});
         setState("等待扫码");
         writeLog("正在生成图片和规格包。会交给当前 Chrome 插件读取图片空间，不会打开独立测试浏览器；随后匹配主图、详情页、尺寸图和规格价格。");
-        const data = await postJSON("/api/plan", {folder: folder.value, path: materialPath.value, price_multiplier: priceMultiplier.value, price_ending: priceEnding.value, material: materialSelect.value});
+        const data = await postJSON("/api/plan", {folder: folder.value, path: singleMaterialPath(), price_multiplier: priceMultiplier.value, price_ending: priceEnding.value, material: materialSelect.value});
         renderPlan(data);
         writeLog("图片和规格包生成完成。请重点检查主图顺序、详情页顺序、规格名称、尺寸图、价格和库存。");
         setState("已完成");
@@ -1951,6 +2331,7 @@ HTML = r"""<!doctype html>
     document.getElementById("categoryBtn").onclick = async () => {
       try {
         requireTaskInputs({needPath: true});
+        singleMaterialPath();
         setState("已排队");
         writeLog("正在把上架包交给当前 Chrome 插件；不会打开独立测试浏览器。请在打开的拼多多发布页里登录/过滑块。");
         const data = await postJSON("/api/plugin-queue", {folder: folder.value});
@@ -2042,8 +2423,10 @@ HTML = r"""<!doctype html>
     loadDefaults();
     refreshProgress();
     refreshDraftHistory();
+    refreshBatch();
     setInterval(refreshProgress, 2000);
     setInterval(refreshDraftHistory, 5000);
+    setInterval(refreshBatch, 2000);
   </script>
 </body>
 </html>
@@ -2076,13 +2459,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"code": 0, "msg": "ok", "data": None})
                 return
             package = json.loads(package_path.read_text(encoding="utf-8"))
-            self._send_json({"code": 0, "msg": "ok", "data": plugin_product_json(package)})
+            product_data = plugin_product_json(package)
+            product_data["_workbenchTaskId"] = int(read_plugin_status().get("id") or int(time.time() * 1000))
+            self._send_json({"code": 0, "msg": "ok", "data": product_data})
             return
         if parsed.path == "/api/plugin-progress":
             self._send_json({"code": 0, "msg": "ok", "data": read_plugin_status()})
             return
         if parsed.path == "/api/draft-history":
             self._send_json({"code": 0, "msg": "ok", "data": read_saved_draft_history()})
+            return
+        if parsed.path == "/api/batch-queue":
+            self._send_json({"code": 0, "msg": "ok", "data": batch_queue_view()})
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -2152,6 +2540,10 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/plugin-queue":
                 data = asyncio.run(plugin_queue_payload(str(payload.get("folder") or DEFAULT_PRODUCT_FOLDER)))
                 self._send_json(data)
+                return
+            if parsed.path == "/api/batch-queue":
+                data = submit_batch_queue(payload)
+                self._send_json({"code": 0, "msg": "ok", "data": data})
                 return
             if parsed.path == "/api/category-snapshot":
                 data = category_snapshot_payload()
@@ -2223,6 +2615,7 @@ def main() -> None:
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    ensure_batch_worker()
     url = f"http://{args.host}:{args.port}"
     print(f"本地工作台已启动: {url}")
     if not args.no_open:

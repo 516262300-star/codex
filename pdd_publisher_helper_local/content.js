@@ -5,7 +5,8 @@
 
   var Utils, InputHandler, SelectHandler, ImageHandler, SkuHandler, MainModule, CategoryHandler, ImageFission;
   var Toast, Logger;
-  var HELPER_VERSION = '2.1.18';
+  var HELPER_VERSION = '2.1.19';
+  var ACTIVE_TASK_ID = null;
 
   // 当前页面类型
   var PAGE_TYPE = detectPageType();
@@ -76,6 +77,7 @@
           detail: detail || null,
           page_type: PAGE_TYPE,
           url: window.location.href,
+          task_id: ACTIVE_TASK_ID,
           ok: stage !== 'error'
         })
       }).catch(function () {});
@@ -1347,6 +1349,7 @@
     function productRunKey(productData) {
       var skuCount = productData && Array.isArray(productData.skus) ? productData.skus.length : 0;
       return [
+        productData && productData._workbenchTaskId || '',
         productData && productData.title || '',
         productData && productData.productCode || '',
         skuCount,
@@ -1526,6 +1529,7 @@
     function runProductData(productData) {
       refreshPageType();
       if (!productData) return Promise.resolve(false);
+      ACTIVE_TASK_ID = productData._workbenchTaskId || ACTIVE_TASK_ID;
       if (PAGE_TYPE === 'category') {
         reportWorkbenchProgress('task_received', '当前发布页已收到上架任务，准备选择类目');
         Toast.show('插件模式：开始选择类目', 'info', 3000);
@@ -1617,6 +1621,7 @@
           if (!item || busy) return;
           busy = true;
           var productData = JSON.parse(item.json_data || '{}');
+          ACTIVE_TASK_ID = productData._workbenchTaskId || item.id || null;
           reportWorkbenchProgress('task_claiming', '前台发布页发现待上架任务，正在接收任务');
           var readyPromise = PAGE_TYPE === 'category'
             ? waitForStableCategoryVariant(20000)

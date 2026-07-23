@@ -369,3 +369,83 @@ def test_enrich_latest_saved_draft_backfills_success_url(tmp_path, monkeypatch):
     assert history["total"] == 1
     assert history["items"][0]["goods_id"] == "987"
     assert history["items"][0]["url"].endswith("goods_id=987")
+
+
+def test_parse_batch_material_paths_accepts_lines_and_punctuation():
+    assert desktop_tool.parse_batch_material_paths("2026/8256\n2026/8257，2026/8258; 2026/8256") == [
+        "2026/8256",
+        "2026/8257",
+        "2026/8258",
+    ]
+
+
+def test_submit_batch_queue_persists_multiple_tasks(tmp_path, monkeypatch):
+    queue_path = tmp_path / "batch_listing_queue.json"
+    monkeypatch.setattr(desktop_tool, "BATCH_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(desktop_tool, "ensure_batch_worker", lambda: None)
+
+    queue = desktop_tool.submit_batch_queue({
+        "paths": ["2026/8256", "2026/8257"],
+        "folder": "",
+        "price_multiplier": "1.8",
+        "price_ending": "8",
+        "material": "黄铜",
+    })
+
+    assert queue["state"] == "running"
+    assert queue["added"] == 2
+    assert queue["summary"] == {
+        "total": 2,
+        "completed": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "waiting": 2,
+    }
+    assert [item["material_path"] for item in queue["tasks"]] == ["2026/8256", "2026/8257"]
+    assert all(item["status"] == "pending" for item in queue["tasks"])
+
+
+def test_plugin_task_result_requires_saved_draft_for_success():
+    assert desktop_tool.plugin_task_result({
+        "progress": {"stage": "done", "message": "完成", "detail": {"draftSaved": True}}
+    }) == (True, True, "完成")
+
+    done, succeeded, _message = desktop_tool.plugin_task_result({
+        "progress": {"stage": "done", "message": "完成但未保存", "detail": {"draftSaved": False}}
+    })
+    assert done is True
+    assert succeeded is False
+
+    assert desktop_tool.plugin_task_result({
+        "progress": {"stage": "error", "message": "图片上传失败", "ok": False}
+    }) == (True, False, "图片上传失败")
+
+
+def test_batch_worker_continues_after_one_task_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop_tool, "BATCH_QUEUE_PATH", tmp_path / "batch_listing_queue.json")
+    monkeypatch.setattr(desktop_tool, "ensure_batch_worker", lambda: None)
+    desktop_tool.submit_batch_queue({
+        "paths": ["2026/fail", "2026/succeed"],
+        "price_multiplier": "1.8",
+        "price_ending": "8",
+        "material": "黄铜",
+    })
+    visited = []
+
+    def fake_run(task):
+        visited.append(task["material_path"])
+        failed = task["material_path"].endswith("fail")
+        desktop_tool.update_batch_task(
+            task["id"],
+            status="failed" if failed else "succeeded",
+            message="模拟失败" if failed else "草稿已保存",
+        )
+
+    monkeypatch.setattr(desktop_tool, "run_batch_task", fake_run)
+    desktop_tool.batch_worker_loop()
+
+    queue = desktop_tool.batch_queue_view()
+    assert visited == ["2026/fail", "2026/succeed"]
+    assert queue["state"] == "completed"
+    assert queue["summary"]["failed"] == 1
+    assert queue["summary"]["succeeded"] == 1
